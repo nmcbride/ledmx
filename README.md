@@ -6,11 +6,36 @@ modules.
 ```
 ledmx list                                 # show attached panels
 ledmx identify                             # label each panel on screen
+ledmx monitor                              # CPU and memory gauges
 ledmx text "BUILD PASSED" --direction up   # scrolling message
 ledmx animate rain --layout reflect        # procedural effect
 ledmx play clip.mp4 --fit cover            # video
 ledmx clear
 ```
+
+## Daemon and hotkeys
+
+For anything you want always-on, run the daemon and drive it over its control
+socket. Switching is instant, so a keybinding feels immediate:
+
+```
+ledmx daemon                # usually started by systemd, see contrib/
+ledmx status
+ledmx scenes                # monitor rain plasma fire life sweep off
+ledmx scene monitor
+ledmx next                  # cycle; skips "off" so a hotkey never blanks by accident
+ledmx brightness 30
+```
+
+Run it as a **user** service, not a system one: panel access comes from a
+uaccess ACL granted to the logged-in user, so a process running as that user
+gets it for free, while a system unit would need group membership or a udev
+rule of its own. The unit is bound to `graphical-session.target` because the
+ACL only exists while a seat session is active, and `--wait` tolerates starting
+before the ACL has been applied at login.
+
+`contrib/ledmx.service` is a ready-to-install unit; `contrib/home-manager.nix`
+does the same declaratively and adds GNOME keybindings.
 
 ## What this hardware actually does
 

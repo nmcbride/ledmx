@@ -190,6 +190,30 @@ def cmd_monitor(args: argparse.Namespace) -> None:
         panel.close()
 
 
+def cmd_daemon(args: argparse.Namespace) -> None:
+    from .daemon import Daemon, wait_for_panels
+
+    if args.wait:
+        wait_for_panels(timeout=args.wait)
+    d = Daemon(fps=args.fps, brightness=args.brightness, scene=args.scene)
+    # Unbuffered: under systemd stdout is a pipe to the journal, so without an
+    # explicit flush the startup line only appears when the process exits.
+    print(
+        f"ledmx daemon: scene={d.scene_name} panels={len(d.panels)} "
+        f"canvas={d.layout.size[1]}x{d.layout.size[0]} socket={d.socket_path}",
+        flush=True,
+    )
+    d.run()
+    print("ledmx daemon: stopped", flush=True)
+
+
+def cmd_ctl(args: argparse.Namespace) -> None:
+    """Send a command to the running daemon."""
+    from .daemon import send
+
+    print(send(" ".join([args.command, *args.args])))
+
+
 def cmd_clear(args: argparse.Namespace) -> None:
     panels = open_panels()
     for name, panel in panels.items():
@@ -307,6 +331,29 @@ def build_parser() -> argparse.ArgumentParser:
                        help="seconds between /proc samples (default: 0.4)")
     add_render_args(p_mon)
     p_mon.set_defaults(func=cmd_monitor)
+
+    p_daemon = sub.add_parser("daemon", help="run the display daemon")
+    p_daemon.add_argument("--scene", default="monitor")
+    p_daemon.add_argument("--fps", type=float, default=6.0)
+    p_daemon.add_argument("--brightness", type=int, default=45)
+    p_daemon.add_argument("--wait", type=float, default=60.0,
+                          help="seconds to wait for panels before giving up; "
+                               "0 to fail immediately")
+    p_daemon.set_defaults(func=cmd_daemon)
+
+    # Thin clients - these are what hotkeys invoke.
+    for name, help_text in [
+        ("scene", "switch scene, or print the current one"),
+        ("next", "cycle to the next scene"),
+        ("prev", "cycle to the previous scene"),
+        ("brightness", "set or print panel brightness"),
+        ("status", "print daemon status"),
+        ("scenes", "list available scenes"),
+    ]:
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("args", nargs="*")
+        # "scenes" is friendlier on the command line than the wire command.
+        p.set_defaults(func=cmd_ctl, command="list" if name == "scenes" else name)
 
     p_clear = sub.add_parser("clear", help="blank all panels")
     p_clear.set_defaults(func=cmd_clear)

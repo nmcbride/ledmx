@@ -101,17 +101,25 @@ class Gauge:
         read: "callable[[], float]",
         size: Size = (HEIGHT, WIDTH),
         *,
-        peak_hold: float = 2.5,
+        peak_hold: float = 1.5,
+        peak_fall: float = 0.22,
         show_peak: bool = True,
     ):
         self.h, self.w = size
         self.label = label
         self.read = read
+        #: Seconds the marker sits at a new high before it starts descending.
         self.peak_hold = peak_hold
+        #: How fast it descends afterwards, in fraction-of-full-scale per
+        #: second. Snapping straight back to the current value reads as a
+        #: glitch; sliding down reads as a measurement decaying, which is what
+        #: it is. ~0.22 clears the full height in about 4.5 seconds.
+        self.peak_fall = peak_fall
         self.show_peak = show_peak
 
         self._peak = 0.0
         self._peak_at = 0.0
+        self._last_t = 0.0
 
         # Bar occupies the space between the label and the readout, with a
         # blank row either side so the text never touches the fill.
@@ -128,17 +136,20 @@ class Gauge:
             out[self.bar_bottom - filled:self.bar_bottom, :] = BAR_LEVEL
 
         if self.show_peak:
+            dt = max(0.0, min(0.5, t - self._last_t))
             if value >= self._peak:
                 self._peak = value
                 self._peak_at = t
             elif t - self._peak_at > self.peak_hold:
-                self._peak = value
-                self._peak_at = t
+                # Slide down toward the current value rather than snapping to
+                # it, and never below it.
+                self._peak = max(value, self._peak - self.peak_fall * dt)
             # Peak tracks the same smoothed value the bar draws, so the marker
             # can never sit below the bar or run ahead of it.
             peak_row = self.bar_bottom - 1 - int(round(self._peak * (self.bar_rows - 1)))
             if self.bar_top <= peak_row < self.bar_bottom - filled:
                 out[peak_row, :] = PEAK_LEVEL
+        self._last_t = t
 
         # Label falls back to a single initial rather than a word fragment;
         # the reading never truncates, it tightens, so 100 stays "100".
