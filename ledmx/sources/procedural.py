@@ -1,0 +1,211 @@
+"""Procedural animation sources.
+
+Each source is constructed with the canvas size it should render at - which is
+the *layout's* virtual size, not necessarily one panel - and is then called
+with a timestamp to produce a frame. That keeps them agnostic about whether
+they're driving one panel, two side by side, or two flanking a keyboard.
+
+The panels are 9x34: extremely tall and narrow. Effects with a strong vertical
+axis (rain, fire) read far better here than ones designed for landscape.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+
+from ..protocol import HEIGHT, WIDTH
+
+Size = tuple[int, int]  # (height, width)
+
+
+class Plasma:
+    """Classic interference-pattern plasma - smooth, tonal, endless."""
+
+    def __init__(self, size: Size = (HEIGHT, WIDTH), *, speed: float = 1.0,
+                 scale: float = 1.0):
+        h, w = size
+        self.speed = speed
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        self._x = xx / max(1.0, scale)
+        self._y = yy / max(1.0, scale)
+        self._r = np.sqrt((xx - w / 2) ** 2 + (yy - h / 2) ** 2) / max(1.0, scale)
+
+    def __call__(self, t: float) -> np.ndarray:
+        t *= self.speed
+        v = (
+            np.sin(self._x / 2.0 + t)
+            + np.sin(self._y / 4.0 + t * 0.7)
+            + np.sin((self._x + self._y) / 5.0 + t * 1.3)
+            + np.sin(self._r / 3.0 - t * 1.1)
+        )
+        v = (v + 4.0) / 8.0  # -4..4 -> 0..1
+        return (v * 255.0).astype(np.uint8)
+
+
+class MatrixRain:
+    """Falling drops with fading trails. Suits the portrait aspect exactly.
+
+    Two details matter for this to read as rain rather than as falling dots:
+
+    * **Decay is in real time, not frames.** ``tau`` is the exponential time
+      constant in seconds, so a trail looks the same at 6 fps and at 56 fps.
+      Decaying per frame instead makes the trail vanish at low frame rates,
+      which is where the greyscale mode lives.
+    * **Drops paint every row they cross.** At 6 fps a drop advances two or
+      three rows per frame; painting only its final position leaves gaps, so
+      the trail comes out dotted even before decay touches it.
+
+    In 1-bit mode the threshold sits at 50%, so the visible trail is whatever
+    stays above half brightness - about ``tau * 0.7`` seconds of travel. The
+    trail is solid rather than fading, but it is still a trail.
+    """
+
+    def __init__(self, size: Size = (HEIGHT, WIDTH), *, density: float = 0.5,
+                 speed: float = 11.0, tau: float = 0.20, seed: int = 0):
+        self.h, self.w = size
+        self.speed = speed
+        self.tau = tau
+        self._rng = np.random.default_rng(seed)
+        self._buf = np.zeros((self.h, self.w), dtype=np.float32)
+        self._drops = self._rng.uniform(-self.h, 0, size=self.w).astype(np.float32)
+        self._rates = self._rng.uniform(0.7, 1.4, size=self.w).astype(np.float32)
+        self._active = self._rng.random(self.w) < density
+        self._last_t = 0.0
+
+    def __call__(self, t: float) -> np.ndarray:
+        # Clamp dt so a stall (or the very first call) doesn't wipe the buffer.
+        dt = min(0.2, max(0.0, t - self._last_t))
+        self._last_t = t
+
+        self._buf *= float(np.exp(-dt / self.tau))
+
+        previous = self._drops.copy()
+        self._drops += self._rates * self.speed * dt
+
+        for x in range(self.w):
+            if not self._active[x]:
+                continue
+            # Fill every row between the old and new head position.
+            start = int(np.floor(previous[x])) + 1
+            end = int(np.floor(self._drops[x]))
+            for y in range(start, end + 1):
+                if 0 <= y < self.h:
+                    self._buf[y, x] = 1.0
+
+            if self._drops[x] > self.h + self._rng.uniform(0, self.h):
+                self._drops[x] = -self._rng.uniform(0, self.h * 0.5)
+                self._rates[x] = self._rng.uniform(0.7, 1.4)
+                self._active[x] = self._rng.random() < 0.85
+
+        return np.clip(self._buf * 255.0, 0, 255).astype(np.uint8)
+
+
+class Fire:
+    """Upward-propagating fire, seeded along the bottom row."""
+
+    def __init__(self, size: Size = (HEIGHT, WIDTH), *, cooling: float = 0.16,
+                 seed: int = 0):
+        self.h, self.w = size
+        self.cooling = cooling
+        self._rng = np.random.default_rng(seed)
+        self._buf = np.zeros((self.h, self.w), dtype=np.float32)
+        self._last_t = 0.0
+
+    def __call__(self, t: float) -> np.ndarray:
+        # Fixed-step update keeps the look stable regardless of frame rate.
+        steps = 1 if t - self._last_t < 0.05 else 2
+        self._last_t = t
+
+        for _ in range(steps):
+            self._buf[-1, :] = self._rng.uniform(0.6, 1.0, size=self.w)
+
+            up = np.roll(self._buf, -1, axis=0)
+            left = np.roll(up, -1, axis=1)
+            right = np.roll(up, 1, axis=1)
+            self._buf = (up * 0.5 + left * 0.25 + right * 0.25)
+            self._buf -= self._rng.uniform(0.0, self.cooling, size=self._buf.shape)
+            np.clip(self._buf, 0.0, 1.0, out=self._buf)
+
+        return (self._buf * 255.0).astype(np.uint8)
+
+
+class Life:
+    """Conway's Game of Life with a fade trail and stagnation reseeding."""
+
+    def __init__(self, size: Size = (HEIGHT, WIDTH), *, step_hz: float = 8.0,
+                 fill: float = 0.3, seed: int = 0):
+        self.h, self.w = size
+        self.step_hz = step_hz
+        self.fill = fill
+        self._rng = np.random.default_rng(seed)
+        self._cells = self._rng.random((self.h, self.w)) < fill
+        self._trail = np.zeros((self.h, self.w), dtype=np.float32)
+        self._next_step = 0.0
+        self._history: list[int] = []
+
+    def _step(self) -> None:
+        c = self._cells
+        neighbours = sum(
+            np.roll(np.roll(c, dy, axis=0), dx, axis=1)
+            for dy in (-1, 0, 1)
+            for dx in (-1, 0, 1)
+            if not (dy == 0 and dx == 0)
+        )
+        self._cells = (neighbours == 3) | (c & (neighbours == 2))
+
+        # Reseed when the population stops changing (still lifes / short cycles),
+        # otherwise the display freezes and looks broken.
+        pop = int(self._cells.sum())
+        self._history.append(pop)
+        if len(self._history) > 12:
+            self._history.pop(0)
+            if pop == 0 or len(set(self._history)) <= 2:
+                self._cells = self._rng.random((self.h, self.w)) < self.fill
+                self._history.clear()
+
+    def __call__(self, t: float) -> np.ndarray:
+        while t >= self._next_step:
+            self._step()
+            self._next_step += 1.0 / self.step_hz
+
+        self._trail *= 0.75
+        self._trail[self._cells] = 1.0
+        return (self._trail * 255.0).astype(np.uint8)
+
+
+class Sweep:
+    """A moving bar - deliberately simple, useful for checking geometry.
+
+    Sweeping across a spanned layout is the quickest way to see whether your
+    panel ordering and gap are right: the bar should exit one panel and enter
+    the next with plausible timing.
+    """
+
+    def __init__(self, size: Size = (HEIGHT, WIDTH), *, period: float = 4.0,
+                 width: int = 2, vertical: bool = False):
+        self.h, self.w = size
+        self.period = period
+        self.width = width
+        self.vertical = vertical
+
+    def __call__(self, t: float) -> np.ndarray:
+        out = np.zeros((self.h, self.w), dtype=np.uint8)
+        phase = (t % self.period) / self.period
+        if self.vertical:
+            pos = int(phase * self.h)
+            for i in range(self.width):
+                out[(pos + i) % self.h, :] = 255
+        else:
+            pos = int(phase * self.w)
+            for i in range(self.width):
+                out[:, (pos + i) % self.w] = 255
+        return out
+
+
+SOURCES = {
+    "plasma": Plasma,
+    "rain": MatrixRain,
+    "fire": Fire,
+    "life": Life,
+    "sweep": Sweep,
+}
