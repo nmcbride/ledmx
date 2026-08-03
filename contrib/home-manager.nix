@@ -1,20 +1,31 @@
 # Home Manager configuration for the ledmx daemon and GNOME hotkeys.
 #
-# This is an example to copy into your own configuration - importing it
-# directly would couple your config to this repository's layout.
+# An example to adapt, not to import - importing it directly would couple your
+# configuration to this repository's layout.
 #
-# Assumes `ledmx` is on PATH. With flakes, that usually means adding this
-# repository's package to home.packages:
+# Add the flake as an input and pass the package in:
 #
-#   inputs.ledmx.url = "path:/home/nmcbride/git/framework-led-matrix";
+#   inputs.ledmx.url = "github:nmcbride/framework-led-matrix";  # or path:...
 #   home.packages = [ inputs.ledmx.packages.${pkgs.system}.default ];
+#
+# Note what `ledmxPackage` buys over a hand-written path. Interpolating the
+# derivation makes the unit reference an exact store path that is a genuine
+# dependency of your configuration: it cannot be garbage-collected while the
+# generation exists, and it updates on rebuild. A literal /nix/store path
+# written into a unit file has neither property - it is not a GC root, and it
+# pins the service to one build forever.
 
 { config, lib, pkgs, ... }:
 
 let
-  ledmx = "${config.home.homeDirectory}/.nix-profile/bin/ledmx";
+  # Replace with your flake input, e.g.
+  #   inputs.ledmx.packages.${pkgs.stdenv.hostPlatform.system}.default
+  ledmxPackage = pkgs.ledmx or (throw "set ledmxPackage to the ledmx derivation");
+  ledmx = lib.getExe ledmxPackage;
 in
 {
+  home.packages = [ ledmxPackage ];
+
   # ── daemon ────────────────────────────────────────────────────────────
   #
   # A user service: panel access comes from a uaccess ACL granted to the
