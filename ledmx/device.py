@@ -159,8 +159,6 @@ class Panel:
             info = PanelInfo(device=info, usb_path="", hub="", port="")
         self.info = info
         self._serial = serial.Serial(info.device, baudrate, timeout=1)
-        #: Last frame written, for delta column updates.
-        self._last_frame: np.ndarray | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -194,29 +192,23 @@ class Panel:
 
     # -- display -----------------------------------------------------------
 
-    def show(self, pixels: np.ndarray, *, delta: bool = True) -> None:
+    def show(self, pixels: np.ndarray) -> None:
         """Display a (34, 9) greyscale frame.
 
-        Costs one command per column plus a flush. With ``delta=True`` only
-        columns that changed since the last call are sent, which is the main
-        way to beat the ~6 fps a full-frame greyscale update allows.
+        Always sends all 9 columns plus a flush - 10 commands, ~6 fps. Sending
+        only changed columns is not an available optimisation: the firmware
+        zeroes its staging buffer on every flush, so any column left unstaged
+        goes black rather than holding its previous value. See the note in
+        `ledmx.protocol`.
         """
-        if delta:
-            commands = protocol.changed_columns(pixels, self._last_frame)
-        else:
-            commands = protocol.greyscale_commands(pixels)
-        if commands:
-            self.send_all(commands)
-            self._last_frame = pixels.copy()
+        self.send_all(protocol.greyscale_commands(pixels))
 
     def show_bw(self, pixels: np.ndarray) -> None:
         """Display a (34, 9) 1-bit frame - one command, so ~10x the frame rate."""
         self.send(protocol.bw_frame(pixels))
-        self._last_frame = None
 
     def clear(self) -> None:
         self.send_all(protocol.blank())
-        self._last_frame = None
 
     # -- settings ----------------------------------------------------------
 

@@ -36,11 +36,28 @@ Not 59 frames - 59 *commands*. What that buys depends on the frame type:
 | ----------------------- | -------- | -------- |
 | Black & white (`Draw`)  | 1        | ~59 fps  |
 | Greyscale, full frame   | 10       | ~6 fps   |
-| Greyscale, N columns    | N+1      | ~59/(N+1)|
 
-Greyscale costs one `StageGreyCol` per column plus one flush. `Panel.show()`
-sends only columns that changed, so mostly-static content runs far faster than
-the 6 fps floor.
+Greyscale costs one `StageGreyCol` per column plus one flush, every frame.
+
+### Delta column updates do not work
+
+Sending only the columns that changed is the obvious optimisation and it is a
+trap. `DrawGreyColBuffer` copies the staging buffer to the display and then
+*zeroes* it:
+
+```rust
+state.grid = state.col_buffer.clone();
+state.col_buffer = percentage(0);   // all-zero grid
+```
+
+Nothing carries over between frames. A column that is not re-staged before a
+flush is displayed as black rather than left alone.
+
+This is easy to ship by accident because it is invisible in the common cases:
+content on a black background (blanking is a no-op) and fast motion (nearly
+every column changes anyway). It surfaces as pixels winking out of slow-moving
+or stationary shapes - and it inflates measured frame rates above the 6 fps
+ceiling, which is the tell.
 
 ### Bit order differs between the two draw commands
 

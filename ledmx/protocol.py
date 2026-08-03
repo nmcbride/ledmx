@@ -20,11 +20,11 @@ Frame type           Commands  Ceiling
 ===================  ========  =========================================
 Black & white        1         ~59 fps
 Full greyscale       10        ~6 fps   (9 columns + one flush)
-Greyscale, N cols     N+1      ~59/(N+1) fps
 ===================  ========  =========================================
 
-Hence `greyscale_commands` returns a *list*, and `changed_columns` exists so
-callers can send only the columns that actually differ from what's on screen.
+Both ceilings are absolute. Sending only the columns that changed looks like an
+obvious optimisation and does not work - see the note above
+`greyscale_commands`.
 """
 
 from __future__ import annotations
@@ -112,33 +112,24 @@ def greyscale_commands(pixels: np.ndarray) -> list[bytes]:
     return out
 
 
-def changed_columns(pixels: np.ndarray, previous: np.ndarray | None) -> list[bytes]:
-    """Commands updating only the columns that differ from `previous`.
-
-    Since cost scales with command count, not bytes, skipping unchanged columns
-    is the main lever available for greyscale frame rate. Content with a static
-    background or limited horizontal motion can run several times faster than
-    the ~6 fps a full-frame update allows.
-
-    The flush is still required, so a frame touching N columns costs N+1
-    commands. Returns an empty list when nothing changed at all.
-    """
-    pixels = _as_frame(pixels)
-    if previous is None:
-        return greyscale_commands(pixels)
-
-    columns = np.ascontiguousarray(pixels.T)
-    prev_columns = np.ascontiguousarray(_as_frame(previous).T)
-
-    out = [
-        stage_column(x, columns[x])
-        for x in range(WIDTH)
-        if not np.array_equal(columns[x], prev_columns[x])
-    ]
-    if not out:
-        return []
-    out.append(flush_columns())
-    return out
+# Delta column updates are NOT possible, despite being the obvious optimisation.
+#
+# DrawGreyColBuffer copies the staging buffer to the display and then zeroes it:
+#
+#     state.grid = state.col_buffer.clone();
+#     state.col_buffer = percentage(0);      // all-zero grid
+#
+# So the staging buffer never carries anything over between frames. Any column
+# not re-staged before a flush is displayed as black, not left alone. Sending
+# only changed columns silently blanks everything else.
+#
+# The failure is easy to miss because it is invisible for the common cases:
+# content on a black background (where blanking is a no-op) and fast motion
+# (where nearly every column changes anyway). It shows up as pixels winking out
+# of slow-moving or static shapes.
+#
+# Consequence: every greyscale frame costs all 9 columns plus a flush, and the
+# ~6 fps ceiling is absolute rather than a worst case.
 
 
 def bw_frame(pixels: np.ndarray) -> bytes:
