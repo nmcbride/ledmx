@@ -13,6 +13,7 @@ from .layout import Layout, Placement
 from .protocol import HEIGHT, WIDTH
 from .runner import Runner
 from .sources import SOURCES, ScrollingText, StaticText, VideoSource
+from .sources.system import build_gauges
 
 
 def _build_layout(args: argparse.Namespace) -> Layout:
@@ -157,6 +158,38 @@ def cmd_text(args: argparse.Namespace) -> None:
     _run(args, make)
 
 
+def cmd_monitor(args: argparse.Namespace) -> None:
+    """One gauge per panel, so it works adjacent or flanking alike."""
+    panels = open_panels()
+    names = list(panels)
+    stats, gauges = build_gauges(names, (HEIGHT, WIDTH))
+    stats.interval = args.interval
+
+    ditherer = None
+    if args.dither != "off":
+        ditherer = dither.make(args.dither, (HEIGHT, WIDTH))
+
+    runner = Runner(
+        panels, fps=args.fps, brightness=args.brightness, ditherer=ditherer
+    )
+
+    def produce(t: float):
+        stats.update(t)
+        return {name: gauges[name](t) for name in names}
+
+    for name, gauge in gauges.items():
+        print(f"  {name}: {gauge.label}")
+    print(
+        f"panels={len(panels)}  target={args.fps} fps"
+        + ("  (ctrl-c to stop)" if args.duration is None else "")
+    )
+
+    result = runner.run(produce, duration=args.duration)
+    print(f"\n{result.frames} frames in {result.elapsed:.1f}s")
+    for panel in panels.values():
+        panel.close()
+
+
 def cmd_clear(args: argparse.Namespace) -> None:
     panels = open_panels()
     for name, panel in panels.items():
@@ -268,6 +301,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_text.add_argument("--static", action="store_true")
     add_render_args(p_text)
     p_text.set_defaults(func=cmd_text)
+
+    p_mon = sub.add_parser("monitor", help="per-thread CPU and memory bars")
+    p_mon.add_argument("--interval", type=float, default=0.4,
+                       help="seconds between /proc samples (default: 0.4)")
+    add_render_args(p_mon)
+    p_mon.set_defaults(func=cmd_monitor)
 
     p_clear = sub.add_parser("clear", help="blank all panels")
     p_clear.set_defaults(func=cmd_clear)
