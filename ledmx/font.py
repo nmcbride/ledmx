@@ -77,8 +77,14 @@ def text_width(text: str, *, spacing: int = 1) -> int:
     return n * GLYPH_WIDTH + (n - 1) * spacing
 
 
-def render(text: str, *, spacing: int = 1) -> np.ndarray:
-    """Render text as a (5, width) uint8 array."""
+def render(text: str, *, spacing: int = 1, scale: int = 1) -> np.ndarray:
+    """Render text as a (5*scale, width) uint8 array.
+
+    Scaling is integer nearest-neighbour, which is the only correct choice for
+    a bitmap font: every source pixel becomes an exact NxN block, so strokes
+    stay uniform and edges stay hard. Any interpolating filter would blur a
+    3px-wide glyph into mush.
+    """
     width = text_width(text, spacing=spacing)
     out = np.zeros((GLYPH_HEIGHT, max(0, width)), dtype=np.uint8)
     x = 0
@@ -87,6 +93,9 @@ def render(text: str, *, spacing: int = 1) -> np.ndarray:
         if g is not None:
             out[:, x:x + GLYPH_WIDTH] = g
         x += GLYPH_WIDTH + spacing
+
+    if scale > 1:
+        out = np.repeat(np.repeat(out, scale, axis=0), scale, axis=1)
     return out
 
 
@@ -123,7 +132,7 @@ def label_for(text: str, width: int, *, spacing: int = 1) -> str:
 
 def draw_centered(
     target: np.ndarray, text: str, top: int, *, level: int = 255,
-    spacing: int = 1, allow_tight: bool = False,
+    spacing: int = 1, allow_tight: bool = False, scale: int = 1,
 ) -> None:
     """Draw `text` horizontally centred into `target` at row `top`.
 
@@ -139,18 +148,21 @@ def draw_centered(
     reading. Cramped and correct beats spaced and false.
     """
     height, width = target.shape
-    if top < 0 or top + GLYPH_HEIGHT > height:
+    if top < 0 or top + GLYPH_HEIGHT * scale > height:
         return
 
+    # Spacing and fitting are measured in unscaled pixels, then scaled with
+    # everything else.
+    budget = width // scale
     used_spacing = spacing
-    if allow_tight and not fits(text, width, spacing=spacing):
+    if allow_tight and not fits(text, budget, spacing=spacing):
         used_spacing = 0
 
-    text = abbreviate(text, width, spacing=used_spacing)
+    text = abbreviate(text, budget, spacing=used_spacing)
     if not text:
         return
 
-    strip = render(text, spacing=used_spacing)
+    strip = render(text, spacing=used_spacing, scale=scale)
     x = (width - strip.shape[1]) // 2
-    region = target[top:top + GLYPH_HEIGHT, x:x + strip.shape[1]]
+    region = target[top:top + strip.shape[0], x:x + strip.shape[1]]
     region[strip > 0] = level

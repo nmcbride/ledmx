@@ -20,9 +20,12 @@ import threading
 import time
 from pathlib import Path
 
+from dataclasses import dataclass, field
+
 from . import layout as layout_mod
 from . import scenes as scenes_mod
 from .device import Panel, discover, open_panels
+from .protocol import WIDTH
 from .runner import _PanelWriter
 
 
@@ -52,6 +55,21 @@ def wait_for_panels(timeout: float = 60.0, interval: float = 2.0) -> None:
     )
 
 
+@dataclass
+class _Group:
+    """A set of panels rendered together by one producer.
+
+    Grouping is what separates "one image spanning both panels" from "the same
+    scene drawn twice". Panels in a group share a canvas; panels in different
+    groups are wholly independent, including their scene clocks.
+    """
+
+    panels: list[str]
+    scene: str
+    producer: object
+    started: float
+
+
 class Daemon:
     """Renders the active scene; accepts control commands on a Unix socket."""
 
@@ -73,34 +91,111 @@ class Daemon:
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self.scene_name = scene
-        self._producer = scenes_mod.get(scene).build(self.layout, self.names)
-        self._scene_started = 0.0
+        self._groups: list[_Group] = []
+        self._set_all(scene, now=0.0)
 
         for panel in self.panels.values():
             panel.set_sleeping(False)
             panel.set_brightness(self.brightness)
 
     def _resolve_layout(self):
-        saved = layout_mod.load()
-        if saved is not None:
-            # The saved layout keys panels by device path; keep only what is
-            # currently attached.
-            placements = [p for p in saved.placements if p.name in self.panels]
-            if placements:
-                return layout_mod.Layout(placements)
-        return layout_mod.default_layout()
+        """Load the layout and rename its placements to match panel keys.
 
-    # -- control -----------------------------------------------------------
+        Layouts identify panels by device path, because that is what survives
+        being saved to disk. The daemon addresses them by side - "left",
+        "right" - because that is what a person types at a hotkey. Those two
+        namespaces have to be reconciled somewhere, and it has to be here:
+        `Layout.subset` and `Layout.slice` both match on placement name, so a
+        mismatch silently yields an empty layout and no frames. Per-panel
+        scenes never touch the layout and so keep working, which makes the
+        failure look like it belongs to specific scenes rather than to the
+        naming.
+        """
+        by_device = {p.info.device: name for name, p in self.panels.items()}
+
+        saved = layout_mod.load()
+        base = saved if saved is not None else layout_mod.default_layout()
+
+        placements = [
+            layout_mod.Placement(
+                name=by_device[p.name], x=p.x, y=p.y, rotate=p.rotate,
+                flip_h=p.flip_h, flip_v=p.flip_v,
+            )
+            for p in base.placements
+            if p.name in by_device
+        ]
+        if not placements:
+            # Nothing matched - fall back to side-by-side over whatever is
+            # attached, rather than rendering nothing at all.
+            placements = [
+                layout_mod.Placement(name=name, x=i * WIDTH)
+                for i, name in enumerate(self.panels)
+            ]
+        return layout_mod.Layout(placements)
+
+    # -- scene assignment --------------------------------------------------
+
+    def _build(self, names: list[str], scene: str, now: float) -> "_Group":
+        sub = self.layout.subset(names)
+        producer = scenes_mod.get(scene).build(sub, names)
+        return _Group(panels=list(names), scene=scene, producer=producer,
+                      started=now)
+
+    def _set_all(self, scene: str, *, now: float) -> str:
+        """One scene across every panel, sharing a single canvas.
+
+        Distinct from assigning the same scene to each panel individually: a
+        spanning scene built once over the full layout draws one image across
+        both panels, whereas per-panel builds would draw two unrelated copies.
+        """
+        group = self._build(self.names, scene, now)
+        with self._lock:
+            self._groups = [group]
+        return scene
+
+    def _set_panel(self, panel: str, scene: str, *, now: float) -> str:
+        if panel not in self.panels:
+            raise KeyError(
+                f"unknown panel '{panel}'; known: {', '.join(self.names)}"
+            )
+        with self._lock:
+            groups = list(self._groups)
+
+        rebuilt: list[_Group] = []
+        for group in groups:
+            if panel not in group.panels:
+                rebuilt.append(group)
+                continue
+            # Rebuild the group this panel is leaving, so a spanning scene
+            # reflows onto the panels it still owns rather than rendering into
+            # a hole.
+            remaining = [p for p in group.panels if p != panel]
+            if remaining:
+                rebuilt.append(self._build(remaining, group.scene, now))
+
+        rebuilt.append(self._build([panel], scene, now))
+        with self._lock:
+            self._groups = rebuilt
+        return scene
+
+    @property
+    def scene_name(self) -> str:
+        """The scene, when one covers everything; otherwise 'mixed'."""
+        with self._lock:
+            if len(self._groups) == 1:
+                return self._groups[0].scene
+            return "mixed"
+
+    def assignments(self) -> dict[str, str]:
+        with self._lock:
+            return {
+                name: group.scene
+                for group in self._groups
+                for name in group.panels
+            }
 
     def set_scene(self, name: str, *, now: float) -> str:
-        scene = scenes_mod.get(name)
-        producer = scene.build(self.layout, self.names)
-        with self._lock:
-            self._producer = producer
-            self.scene_name = name
-            self._scene_started = now
-        return name
+        return self._set_all(name, now=now)
 
     def set_brightness(self, percent: int) -> int:
         percent = max(0, min(100, percent))
@@ -119,7 +214,13 @@ class Daemon:
         try:
             if cmd == "scene":
                 if not args:
-                    return f"OK {self.scene_name}"
+                    return "OK " + " ".join(
+                        f"{p}={s}" for p, s in sorted(self.assignments().items())
+                    )
+                # "scene <name>" spans every panel; "scene <panel> <name>"
+                # gives one panel its own scene.
+                if len(args) >= 2:
+                    return f"OK {args[0]}={self._set_panel(args[0], args[1], now=now)}"
                 return f"OK {self.set_scene(args[0], now=now)}"
             if cmd in ("next", "prev"):
                 step = 1 if cmd == "next" else -1
@@ -134,10 +235,13 @@ class Daemon:
             if cmd == "list":
                 return "OK " + " ".join(sorted(scenes_mod.SCENES))
             if cmd == "status":
+                assigned = " ".join(
+                    f"{p}={s}" for p, s in sorted(self.assignments().items())
+                )
                 return (
-                    f"OK scene={self.scene_name} brightness={self.brightness} "
-                    f"panels={len(self.panels)} canvas="
-                    f"{self.layout.size[1]}x{self.layout.size[0]}"
+                    f"OK {assigned} brightness={self.brightness} "
+                    f"canvas={self.layout.size[1]}x{self.layout.size[0]} "
+                    f"contiguous={self.layout.contiguous}"
                 )
             if cmd in ("quit", "stop"):
                 self._stop.set()
@@ -212,15 +316,17 @@ class Daemon:
             while not self._stop.is_set():
                 now = time.perf_counter()
                 with self._lock:
-                    producer = self._producer
-                    started = self._scene_started
-                # Scene time restarts on switch so animations begin at zero
-                # rather than jumping into the middle of their cycle.
-                frames = producer((now - self._t0) - started)
-                for name, frame in frames.items():
-                    writer = writers.get(name)
-                    if writer is not None:
-                        writer.submit(frame)
+                    groups = list(self._groups)
+                elapsed = now - self._t0
+                for group in groups:
+                    # Each group keeps its own clock, so a scene assigned to
+                    # one panel starts from zero rather than joining another
+                    # panel's animation mid-cycle.
+                    frames = group.producer(elapsed - group.started)
+                    for name, frame in frames.items():
+                        writer = writers.get(name)
+                        if writer is not None:
+                            writer.submit(frame)
 
                 deadline += interval
                 slack = deadline - time.perf_counter()

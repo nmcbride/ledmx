@@ -25,6 +25,7 @@ from . import canvas as canvas_mod
 from .layout import Layout
 from .protocol import HEIGHT, WIDTH
 from .sources.procedural import Fire, Life, MatrixRain, Plasma, Sweep
+from .sources.clock import build_clock
 from .sources.system import build_gauges
 
 Producer = Callable[[float], Mapping[str, np.ndarray]]
@@ -54,6 +55,16 @@ def _canvas_scene(factory, *, gamma: float = 2.2):
     return build
 
 
+def _clock(layout: Layout, names: list[str]) -> Producer:
+    # Splitting hours from minutes only reads as a time when the panels touch.
+    panels = build_clock(names, (HEIGHT, WIDTH), contiguous=layout.contiguous)
+
+    def produce(t: float):
+        return {name: panels[name](t) for name in names}
+
+    return produce
+
+
 def _monitor(layout: Layout, names: list[str]) -> Producer:
     stats, gauges = build_gauges(names, (HEIGHT, WIDTH))
 
@@ -74,6 +85,7 @@ def _blank(layout: Layout, names: list[str]) -> Producer:
 
 
 SCENES: dict[str, Scene] = {
+    "clock": Scene("clock", _clock, "hours on one panel, minutes on the next"),
     "monitor": Scene("monitor", _monitor, "CPU and memory gauges, one per panel"),
     "rain": Scene("rain", _canvas_scene(MatrixRain), "falling drops with trails"),
     "plasma": Scene("plasma", _canvas_scene(Plasma), "smooth interference pattern"),
@@ -86,7 +98,7 @@ SCENES: dict[str, Scene] = {
 #: Order used by `next` / `prev`. "off" is deliberately excluded so cycling
 #: through scenes with a hotkey never lands on a blank display by accident;
 #: reach it explicitly instead.
-CYCLE = ["monitor", "rain", "plasma", "fire", "life"]
+CYCLE = ["monitor", "clock", "rain", "plasma", "fire", "life"]
 
 
 def get(name: str) -> Scene:

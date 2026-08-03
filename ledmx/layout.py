@@ -81,6 +81,47 @@ class Layout:
     def blank(self) -> np.ndarray:
         return np.zeros(self.size, dtype=np.uint8)
 
+    @property
+    def contiguous(self) -> bool:
+        """Do the panels physically touch, forming one continuous display?
+
+        Content that reads across panels - a time split into hours and minutes,
+        an image spanning both - only works when they do. Separated by a
+        keyboard, the same content reads as two unrelated things, so sources
+        should check this and lay themselves out differently rather than
+        assuming.
+        """
+        if len(self.placements) < 2:
+            return False
+        for i, a in enumerate(self.placements):
+            for b in self.placements[i + 1:]:
+                horizontal = a.y == b.y and abs(a.x - b.x) == WIDTH
+                vertical = a.x == b.x and abs(a.y - b.y) == HEIGHT
+                if horizontal or vertical:
+                    return True
+        return False
+
+    def subset(self, names: list[str]) -> "Layout":
+        """A layout covering only `names`, with its origin normalised.
+
+        Normalising matters: a panel placed at x=99 in a flanking layout would
+        otherwise produce a 108-wide canvas with 99 dead columns. Shifted back
+        to the origin it becomes a tight 9x34, so a scene handed a single panel
+        renders at panel size and lays itself out accordingly.
+        """
+        kept = [p for p in self.placements if p.name in names]
+        if not kept:
+            return Layout([])
+        min_x = min(p.x for p in kept)
+        min_y = min(p.y for p in kept)
+        return Layout([
+            Placement(
+                name=p.name, x=p.x - min_x, y=p.y - min_y,
+                rotate=p.rotate, flip_h=p.flip_h, flip_v=p.flip_v,
+            )
+            for p in kept
+        ])
+
     def slice(self, canvas: np.ndarray) -> dict[str, np.ndarray]:
         """Cut a virtual-canvas frame into per-panel frames."""
         out: dict[str, np.ndarray] = {}
