@@ -4,8 +4,10 @@ Four styles, because "progress" is not one thing and forcing it into a
 percentage bar misrepresents most of them:
 
 ``bar``     a known fraction, 0-100. The familiar case.
-``blocks``  discrete steps - "5 of 12". Separated segments are easier to count
-            at a glance than a smooth fill is to estimate.
+``blocks``  discrete steps - "3 of 5". Right when the number says *which*
+            stage you are in rather than how far along: a deploy pipeline, a
+            retry count, named phases. Use it when you would say the value out
+            loud as "step 3 of 5"; use ``bar`` when you would say "62%".
 ``spin``    unknown duration. An indeterminate animation, because a bar stuck
             at 0% reads as broken rather than as busy, and "working, no idea
             how long" is the honest state for a great many tasks.
@@ -114,45 +116,58 @@ class Gauge:
         return str(int(round(fraction * 100)))
 
     def _draw_blocks(self, out: np.ndarray) -> str:
-        """Discrete segments, or a proportional fill when they cannot be drawn.
+        """Discrete countable segments, with larger step counts folded to fit.
 
-        A countable segment needs at least one lit row plus one blank row to
-        separate it from its neighbour, so the body's 22 rows cap this at 11
-        steps. Beyond that the gap rounds to zero and the segments merge into a
-        continuous fill - which renders pixel-for-pixel identically to `bar`
-        while still calling itself something else. Falling back explicitly is
-        more honest than silently drawing the wrong style.
+        Works at any total: steps beyond MAX_BLOCKS are folded so each drawn
+        segment stands for several of them, rather than the style degrading to
+        a plain fill exactly when there are enough steps to be worth counting.
 
-        The count readout is kept either way: for step-based progress "9" is
-        more use than the percentage it happens to correspond to.
+        The readout always reports the real count. Folding is a display
+        constraint and should not change the number a caller is told.
         """
         total = max(1, int(self.state.total or 1))
         done = int(np.clip(self.state.value, 0, total))
 
-        # Segment height stays fractional and is rounded per edge, so the
-        # segments span the whole body. Integer division instead discards the
-        # remainder: 22 rows over 8 steps gives 2 rows each, filling 16 and
-        # leaving 6 permanently dark, so a finished task displays as roughly
-        # two thirds complete. "Done" has to look done.
-        segment = self.body_rows / total
-        if segment < 2.0:
-            # No room for a separating gap; draw the fraction instead.
-            filled = int(round(done / total * self.body_rows))
-            if filled:
-                out[self.body_bottom - filled:self.body_bottom, :] = BAR_LEVEL
-            return str(done)
+        # Fold the steps onto however many segments the panel can actually
+        # separate. A countable segment needs a lit row plus a blank row, so
+        # 22 body rows cap it at MAX_BLOCKS; beyond that each drawn segment
+        # stands for several steps. Dropping to a plain fill instead would
+        # abandon the one thing this style is for - being countable - exactly
+        # when the step count is high enough to be worth counting.
+        drawn = min(total, MAX_BLOCKS)
+        lit = int(round(done / total * drawn))
+        # Clamp both ends so the two states that matter most stay unambiguous.
+        # Any progress lights at least one segment, so "started" never looks
+        # like "not started"; anything short of complete leaves one unlit, so
+        # "nearly done" never looks like "done". Without the upper clamp,
+        # folding 40 steps onto 11 segments renders 39 and 40 identically -
+        # and being told a job has finished when it has not is the worse of
+        # the two errors.
+        if done > 0:
+            lit = max(1, lit)
+        if done < total:
+            lit = min(lit, drawn - 1)
+
+        # Segment height stays fractional and is rounded per edge, so the stack
+        # spans the whole body. Integer division discards the remainder: 22
+        # rows over 8 steps gives 2 rows each, filling 16 and leaving 6
+        # permanently dark, so a finished task displays as two thirds complete.
+        segment = self.body_rows / drawn
 
         # Fill the exact fraction, then carve gaps at the internal boundaries.
-        # Building each segment with its own gap costs a row at whichever end
-        # the gap sits, so the stack never quite reaches the top even when
-        # complete. Only the boundaries *between* segments need separating.
-        top = max(self.body_top, int(round(self.body_bottom - done * segment)))
+        # Giving each segment its own gap costs a row at whichever end the gap
+        # sits, so the stack could never reach the top; only the boundaries
+        # *between* segments need separating.
+        top = max(self.body_top, int(round(self.body_bottom - lit * segment)))
         if top < self.body_bottom:
             out[top:self.body_bottom, :] = BAR_LEVEL
-        for i in range(1, done):
+        for i in range(1, lit):
             row = int(round(self.body_bottom - i * segment))
             if self.body_top <= row < self.body_bottom:
                 out[row, :] = 0
+
+        # Readout is the real count, not the segment count - the folding is a
+        # display constraint and should not change the number reported.
         return str(done)
 
     def _draw_spin(self, out: np.ndarray, t: float) -> str:
@@ -208,8 +223,11 @@ class Gauge:
         return out
 
 
-#: Most steps that can be drawn as countable segments. Above this the gap
-#: between them rounds to zero and "blocks" degrades to a plain fill.
-MAX_BLOCKS = 11
+#: Most steps drawn as separate segments. The cap is perceptual, not physical:
+#: a few more would fit, but people read about four items instantly and can
+#: count eight or ten with effort - beyond that they stop counting and start
+#: estimating proportion, at which point the segments have stopped doing their
+#: job. Fewer segments also means chunkier ones, which are easier to tell apart.
+MAX_BLOCKS = 10
 
 STYLES = ("bar", "blocks", "spin", "big")
