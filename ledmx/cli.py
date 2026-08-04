@@ -405,6 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("prev", "cycle to the previous scene"),
         ("brightness", "set or print panel brightness"),
         ("status", "print daemon status"),
+        ("toggle", "blank the panels, or restore what was showing"),
         ("scenes", "list available scenes"),
     ]:
         p = sub.add_parser(name, help=help_text)

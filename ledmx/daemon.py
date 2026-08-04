@@ -134,6 +134,8 @@ class Daemon:
         #: Saved assignments while a notification is showing, restored after.
         self._interrupted: list[_Group] | None = None
         self._notify_until = 0.0
+        #: Assignments saved by the blank toggle, restored on the next press.
+        self._before_blank: list[_Group] | None = None
         #: Per-panel gauge state, mutated in place so an update does not
         #: rebuild the scene and restart its animation.
         self._gauges: dict[str, GaugeState] = {}
@@ -404,6 +406,31 @@ class Daemon:
         for group in groups:
             self._apply_mode(group)
 
+    def toggle_blank(self, *, now: float) -> str:
+        """Blank the panels, or restore whatever was showing before.
+
+        A one-way "off" is a poor hotkey: blanking is the easy half, and
+        getting back means remembering which scene you were on. Saving the
+        assignments means one key does both, and a mixed per-panel setup comes
+        back exactly as it was rather than collapsing to a single scene.
+        """
+        with self._lock:
+            saved = self._before_blank
+        if saved is not None:
+            with self._lock:
+                self._before_blank = None
+                self._groups = saved
+                for group in saved:
+                    group.deadline = 0.0
+            for group in saved:
+                self._apply_mode(group)
+            return "restored"
+
+        with self._lock:
+            self._before_blank = list(self._groups)
+        self.set_scene("off", now=now)
+        return "blank"
+
     def set_brightness(self, percent: int) -> int:
         percent = max(0, min(100, percent))
         with self._lock:
@@ -485,6 +512,8 @@ class Daemon:
                 )
             if cmd == "off":
                 return f"OK {self.set_scene('off', now=now)}"
+            if cmd == "toggle":
+                return f"OK {self.toggle_blank(now=now)}"
             if cmd == "list":
                 return "OK " + " ".join(sorted(scenes_mod.SCENES))
             if cmd == "status":
