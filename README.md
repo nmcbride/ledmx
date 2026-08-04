@@ -71,7 +71,7 @@ Standalone commands (not daemon clients): `list`, `identify`, `save-layout`,
 | --- | --- |
 | `monitor` | CPU on one panel, memory on the other |
 | `clock` | hours and minutes, split across panels when adjacent, whole time on each when separated |
-| `spectrum` | audio spectrum of **system output** |
+| `spectrum` | audio spectrum of **system output**, spanned across every panel it is given |
 | `listen` | audio spectrum of the **microphone** - not in the cycle, no hotkey, must be named explicitly |
 | `rain` | falling drops with fading trails |
 | `plasma` | smooth interference pattern |
@@ -181,6 +181,14 @@ and do not restart anything:
 
 ```bash
 while read -r pct; do ledmx gauge left DL "$pct"; done < <(download_with_progress)
+```
+
+Mixing scenes across panels is a script's job rather than a hotkey's - the
+hotkeys deliberately do the obvious thing and take both panels:
+
+```bash
+ledmx scene left monitor      # CPU only (memory is the second metric,
+ledmx scene right spectrum    # so one panel gets just CPU)
 ```
 
 For a trend rather than a level, call the same gauge repeatedly with

@@ -78,12 +78,19 @@ def _spectrum_scene(source: str):
     """Build a spectrum scene reading from `source` ('output' or 'mic')."""
 
     def _spectrum(layout: Layout, names: list[str]) -> Producer:
-        """Spans contiguous panels; independent spectra when separated.
+        """One spectrum across every panel, bass left to treble right.
 
-        Adjacent panels give one 18-band spectrum reading left to right.
-        Separated, splitting one spectrum across a keyboard would put the bass
-        on one side of the machine and the treble on the other, so each panel
-        gets its own full 9-band spectrum instead.
+        Always spanned, whether the panels touch or flank the keyboard. A gap
+        between low and high frequencies does not break the reading - the
+        mapping is left-to-right either way, and bass on one side of the
+        machine with treble on the other is a legible arrangement in its own
+        right.
+
+        Deliberately not `layout.slice`: the flanking canvas is 108 columns, so
+        slicing it would give each panel nine bands out of 108 and hide the
+        ninety in between. Panels are ordered by placement and handed a
+        contiguous ninth of an 18-band spectrum instead, so the gap costs
+        nothing.
         """
         from .sources.audio import AudioCapture, Spectrum
 
@@ -92,16 +99,16 @@ def _spectrum_scene(source: str):
         if capture.error:
             print(f"ledmx: spectrum ({source}) unavailable: {capture.error}", flush=True)
 
-        if layout.contiguous:
-            bars = Spectrum(capture, layout.size)
+        placed = {p.name: (p.y, p.x) for p in layout.placements}
+        ordered = sorted(names, key=lambda n: placed.get(n, (0, 0)))
+        bars = Spectrum(capture, (HEIGHT, WIDTH * len(ordered)))
 
-            def produce(t: float):
-                return layout.slice(bars(t))
-        else:
-            panels = {name: Spectrum(capture, (HEIGHT, WIDTH)) for name in names}
-
-            def produce(t: float):
-                return {name: panels[name](t) for name in names}
+        def produce(t: float):
+            frame = bars(t)
+            return {
+                name: np.ascontiguousarray(frame[:, i * WIDTH:(i + 1) * WIDTH])
+                for i, name in enumerate(ordered)
+            }
 
         produce.capture = capture  # keep a reference so it is not collected
         return produce
