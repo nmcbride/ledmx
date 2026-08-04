@@ -27,6 +27,7 @@ from . import dither
 from . import layout as layout_mod
 from . import scenes as scenes_mod
 from .device import Panel, discover, open_panels
+from .sources.progress import Gauge, GaugeState, STYLES
 from .protocol import HEIGHT, WIDTH
 from .runner import _PanelWriter
 
@@ -131,6 +132,9 @@ class Daemon:
         #: Saved assignments while a notification is showing, restored after.
         self._interrupted: list[_Group] | None = None
         self._notify_until = 0.0
+        #: Per-panel gauge state, mutated in place so an update does not
+        #: rebuild the scene and restart its animation.
+        self._gauges: dict[str, GaugeState] = {}
         self._set_all(scene, now=0.0)
 
         for panel in self.panels.values():
@@ -300,6 +304,69 @@ class Daemon:
         self._apply_mode(group)
         return f"{name} {duration:.1f}s"
 
+    def set_gauge(
+        self, panel: str, label: str, value: float, *,
+        now: float, style: str = "bar", total: float | None = None,
+    ) -> str:
+        """Show or update a progress gauge on one panel.
+
+        Updating an existing gauge mutates its state rather than rebuilding the
+        group, so a caller polling every second does not restart the animation
+        or reset the scene clock each time.
+        """
+        if panel not in self.panels:
+            raise KeyError(
+                f"unknown panel '{panel}'; known: {', '.join(self.names)}"
+            )
+        if style not in STYLES:
+            raise ValueError(
+                f"unknown style '{style}'; choose from {', '.join(STYLES)}"
+            )
+
+        existing = self._gauges.get(panel)
+        owns_panel = any(
+            g.scene == "gauge" and panel in g.panels for g in self._groups
+        )
+        # Only a *value* update can be applied in place. A style change alters
+        # the render mode, which belongs to the group, so it needs a rebuild.
+        if existing is not None and owns_panel and existing.style == style:
+            existing.label = label
+            existing.value = value
+            existing.total = total
+            return f"{panel}={style} {value:g}"
+
+        state = GaugeState(label=label, value=value, style=style, total=total)
+        self._gauges[panel] = state
+        gauge = Gauge(state, (HEIGHT, WIDTH))
+
+        def produce(t: float, _g=gauge, _p=panel):
+            return {_p: _g(t)}
+
+        # Mode follows the style. The static styles draw their fill dimmer than
+        # their text, and that distinction only exists in greyscale - rendered
+        # 1-bit, a 120-level bar falls below the 128 threshold and vanishes
+        # completely, leaving a label and a number with nothing between them.
+        # Only the spinner needs the frame rate that 1-bit buys.
+        mode, fps = ("bw", 30.0) if style == "spin" else ("greyscale", 6.0)
+        group = _Group(
+            panels=[panel], scene="gauge", producer=produce, started=now,
+            mode=mode, fps=fps, deadline=0.0,
+        )
+
+        rebuilt = []
+        for g in self._groups:
+            if panel not in g.panels:
+                rebuilt.append(g)
+                continue
+            remaining = [n for n in g.panels if n != panel]
+            if remaining:
+                rebuilt.append(self._build(remaining, g.scene, now))
+        rebuilt.append(group)
+        with self._lock:
+            self._groups = rebuilt
+        self._apply_mode(group)
+        return f"{panel}={style} {value:g}"
+
     def _restore_if_done(self, now: float) -> None:
         with self._lock:
             if self._interrupted is None or now < self._notify_until:
@@ -346,6 +413,18 @@ class Daemon:
                 if not args:
                     return f"OK {self.brightness}"
                 return f"OK {self.set_brightness(int(args[0]))}"
+            if cmd == "gauge":
+                opts, rest = _split_options(args)
+                words = rest.split()
+                if len(words) < 2:
+                    return "ERR usage: gauge <panel> <label> [value]"
+                panel, label = words[0], words[1]
+                value = float(words[2]) if len(words) > 2 else 0.0
+                total = float(opts["of"]) if "of" in opts else None
+                style = opts.get("style", "blocks" if total else "bar")
+                return "OK gauge " + self.set_gauge(
+                    panel, label, value, now=now, style=style, total=total
+                )
             if cmd == "alert":
                 opts, rest = _split_options(args)
                 target = rest.split()[0] if rest else ""

@@ -178,7 +178,7 @@ def cmd_monitor(args: argparse.Namespace) -> None:
         return {name: gauges[name](t) for name in names}
 
     for name, gauge in gauges.items():
-        print(f"  {name}: {gauge.label}")
+        print(f"  {name}: {gauge.state.label}")
     print(
         f"panels={len(panels)}  target={args.fps} fps"
         + ("  (ctrl-c to stop)" if args.duration is None else "")
@@ -241,6 +241,21 @@ def cmd_alert(args: argparse.Namespace) -> None:
     if args.repeat != 1:
         parts += ["--repeat", str(args.repeat)]
     parts += ["--", args.pattern]
+    print(send(" ".join(parts)))
+
+
+def cmd_gauge(args: argparse.Namespace) -> None:
+    """Show or update a progress gauge on one panel."""
+    from .daemon import send
+
+    parts = ["gauge"]
+    if args.style:
+        parts += ["--style", args.style]
+    if args.of is not None:
+        parts += ["--of", str(args.of)]
+    parts += ["--", args.panel, args.label]
+    if args.value is not None:
+        parts.append(str(args.value))
     print(send(" ".join(parts)))
 
 
@@ -407,6 +422,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_alerts = sub.add_parser("alerts", help="list alert patterns")
     p_alerts.add_argument("args", nargs="*")
     p_alerts.set_defaults(func=cmd_ctl, command="alerts")
+
+    p_gauge = sub.add_parser("gauge", help="progress gauge on one panel")
+    p_gauge.add_argument("panel")
+    p_gauge.add_argument("label")
+    p_gauge.add_argument("value", nargs="?", type=float, default=None)
+    p_gauge.add_argument("--style", choices=["bar", "blocks", "spin", "big"],
+                         default=None,
+                         help="bar: 0-100%%; blocks: discrete steps (implied "
+                              "by --of); spin: unknown duration; big: a count")
+    p_gauge.add_argument("--of", type=float, default=None,
+                         help="total for step counting, e.g. 5 --of 12")
+    p_gauge.set_defaults(func=cmd_gauge)
 
     p_clear = sub.add_parser("clear", help="blank all panels")
     p_clear.set_defaults(func=cmd_clear)
