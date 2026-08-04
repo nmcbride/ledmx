@@ -100,16 +100,93 @@ class MatrixRain:
         return np.clip(self._buf * 255.0, 0, 255).astype(np.uint8)
 
 
-class Fire:
-    """Upward-propagating fire, seeded along the bottom row."""
+#: Which edge (or edges) the fire burns from.
+FIRE_SOURCES = ("bottom", "top", "left", "right", "both", "sides")
 
-    def __init__(self, size: Size = (HEIGHT, WIDTH), *, cooling: float = 0.16,
-                 seed: int = 0):
+
+class Fire:
+    """Fire propagating away from one or more edges.
+
+    Orientation matters more here than on a normal display. Fire is legible
+    mostly through *sideways* movement - flames splitting, licking, curling -
+    and nine columns cannot show any of it, so a bottom-burning fire on this
+    panel reads as a vertical shimmer. Burning from a long edge instead gives
+    the spread 34 pixels to happen in, which is the only axis with room for it.
+
+    The simulation always runs bottom-up on its own buffer; orientation is
+    applied by rotating the result. That keeps one propagation rule rather than
+    four, and means a fix to the flame behaviour applies to every direction.
+    """
+
+    def __init__(self, size: Size = (HEIGHT, WIDTH), *, source: str = "bottom",
+                 cooling: float = 0.11, seed: int = 0):
+        if source not in FIRE_SOURCES:
+            raise ValueError(
+                f"source must be one of {', '.join(FIRE_SOURCES)}, got {source!r}"
+            )
         self.h, self.w = size
+        self.source = source
         self.cooling = cooling
         self._rng = np.random.default_rng(seed)
-        self._buf = np.zeros((self.h, self.w), dtype=np.float32)
         self._last_t = 0.0
+
+        # Sideways sources rotate the working buffer, so the simulation's
+        # "width" is the panel's long axis.
+        sideways = source in ("left", "right", "sides")
+        shape = (self.w, self.h) if sideways else (self.h, self.w)
+        self._count = 2 if source in ("both", "sides") else 1
+        self._buffers = [np.zeros(shape, dtype=np.float32)
+                         for _ in range(self._count)]
+        # Per-column embers that drift, so hot spots persist and wander instead
+        # of the base re-randomising every frame - uniform seeding is what makes
+        # fire shimmer rather than flicker.
+        self._embers = [self._rng.uniform(0.55, 1.0, shape[1]).astype(np.float32)
+                        for _ in range(self._count)]
+
+    def _advance(self, buf: np.ndarray, embers: np.ndarray) -> np.ndarray:
+        embers += self._rng.normal(0.0, 0.18, embers.shape).astype(np.float32)
+        # Smooth laterally so a hot spot has width and survives a few frames.
+        embers[:] = (
+            embers * 0.6
+            + np.roll(embers, 1) * 0.2
+            + np.roll(embers, -1) * 0.2
+        )
+        np.clip(embers, 0.35, 1.0, out=embers)
+        buf[-1, :] = embers
+
+        up = np.roll(buf, -1, axis=0)
+        left = np.roll(up, -1, axis=1)
+        right = np.roll(up, 1, axis=1)
+        buf = up * 0.56 + left * 0.22 + right * 0.22
+
+        # Cooling varies by column as well as by cell, so some columns carry
+        # heat further - the nearest thing to a lick that this width allows.
+        column_bias = self._rng.uniform(0.6, 1.4, buf.shape[1]).astype(np.float32)
+        buf -= self._rng.uniform(0.0, self.cooling, buf.shape) * column_bias
+
+        # Occasional sparks: a bright cell thrown clear of the flame front.
+        if self._rng.random() < 0.35:
+            x = self._rng.integers(0, buf.shape[1])
+            y = self._rng.integers(buf.shape[0] // 2, buf.shape[0] - 1)
+            buf[y, x] = 1.0
+
+        np.clip(buf, 0.0, 1.0, out=buf)
+        return buf
+
+    def _orient(self, buf: np.ndarray, index: int) -> np.ndarray:
+        """Map a bottom-burning buffer onto the panel for this source."""
+        if self.source == "bottom":
+            return buf
+        if self.source == "top":
+            return np.flipud(buf)
+        if self.source == "both":
+            return buf if index == 0 else np.flipud(buf)
+        if self.source == "left":
+            return np.rot90(buf, k=-1)
+        if self.source == "right":
+            return np.rot90(buf, k=1)
+        # sides: one from each long edge
+        return np.rot90(buf, k=-1) if index == 0 else np.rot90(buf, k=1)
 
     def __call__(self, t: float) -> np.ndarray:
         # Fixed-step update keeps the look stable regardless of frame rate.
@@ -117,16 +194,13 @@ class Fire:
         self._last_t = t
 
         for _ in range(steps):
-            self._buf[-1, :] = self._rng.uniform(0.6, 1.0, size=self.w)
+            for i in range(self._count):
+                self._buffers[i] = self._advance(self._buffers[i], self._embers[i])
 
-            up = np.roll(self._buf, -1, axis=0)
-            left = np.roll(up, -1, axis=1)
-            right = np.roll(up, 1, axis=1)
-            self._buf = (up * 0.5 + left * 0.25 + right * 0.25)
-            self._buf -= self._rng.uniform(0.0, self.cooling, size=self._buf.shape)
-            np.clip(self._buf, 0.0, 1.0, out=self._buf)
-
-        return (self._buf * 255.0).astype(np.uint8)
+        out = np.zeros((self.h, self.w), dtype=np.float32)
+        for i, buf in enumerate(self._buffers):
+            out = np.maximum(out, self._orient(buf, i))
+        return (out * 255.0).astype(np.uint8)
 
 
 class Life:

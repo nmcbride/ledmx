@@ -247,6 +247,15 @@ def load(path: Path | None = None) -> Layout | None:
                 flip_v=bool(entry.get("flip_v", False)),
             )
         )
+
+    # All or nothing. Moving one module changes its USB path, so a saved layout
+    # can match some attached panels and not others - and applying it partially
+    # leaves the unmatched panel with no placement at all, so it simply stays
+    # dark with nothing to say why. Falling back to auto-detection puts content
+    # on every panel, which is wrong in a visible, fixable way rather than an
+    # invisible one.
+    if len(placements) != len(by_usb):
+        return None
     return Layout(placements) if placements else None
 
 

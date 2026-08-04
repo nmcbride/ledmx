@@ -142,6 +142,8 @@ def cmd_animate(args: argparse.Namespace) -> None:
     cls = SOURCES[args.effect]
 
     def make(size):
+        if args.effect == "fire" and args.source:
+            return cls(size, source=args.source)
         return cls(size)
 
     _run(args, make)
@@ -364,6 +366,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_anim = sub.add_parser("animate", help="run a procedural effect")
     p_anim.add_argument("effect", choices=sorted(SOURCES))
+    p_anim.add_argument("--source", default=None,
+                        choices=["bottom", "top", "left", "right", "both",
+                                 "sides"],
+                        help="which edge fire burns from")
     add_render_args(p_anim)
     p_anim.set_defaults(func=cmd_animate)
 
