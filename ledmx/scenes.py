@@ -130,7 +130,8 @@ def _monitor(layout: Layout, names: list[str]) -> Producer:
 
 
 def notification(
-    message: str, names: list[str], *, speed: float = 14.0
+    message: str, names: list[str], *, speed: float = 14.0,
+    direction: str = "up",
 ) -> tuple[Producer, float]:
     """A one-shot scrolling message, plus how long it needs to finish.
 
@@ -145,7 +146,9 @@ def notification(
     """
     from .sources.text import ScrollingText
 
-    source = ScrollingText(message, (HEIGHT, WIDTH), speed=speed, direction="up")
+    source = ScrollingText(
+        message, (HEIGHT, WIDTH), speed=speed, direction=direction
+    )
     rows = source.strip.shape[0] if source.strip.size else HEIGHT
     # One full pass, plus the panel height so the tail clears the display.
     duration = (rows + HEIGHT) / speed

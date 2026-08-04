@@ -214,6 +214,36 @@ def cmd_ctl(args: argparse.Namespace) -> None:
     print(send(" ".join([args.command, *args.args])))
 
 
+def cmd_notify(args: argparse.Namespace) -> None:
+    """Scroll a message, then restore whatever was showing.
+
+    Options are sent ahead of the message so the message itself needs no
+    quoting or escaping on the wire - notification text is arbitrary and may
+    contain anything.
+    """
+    from .daemon import send
+
+    parts = ["notify"]
+    if args.direction != "up":
+        parts += ["--direction", args.direction]
+    if args.speed != 14.0:
+        parts += ["--speed", str(args.speed)]
+    # Always terminate options, so a message starting with a dash survives.
+    parts += ["--", args.message]
+    print(send(" ".join(parts)))
+
+
+def cmd_alert(args: argparse.Namespace) -> None:
+    """Flash a wordless pattern, then restore whatever was showing."""
+    from .daemon import send
+
+    parts = ["alert"]
+    if args.repeat != 1:
+        parts += ["--repeat", str(args.repeat)]
+    parts += ["--", args.pattern]
+    print(send(" ".join(parts)))
+
+
 def cmd_clear(args: argparse.Namespace) -> None:
     panels = open_panels()
     for name, panel in panels.items():
@@ -349,12 +379,34 @@ def build_parser() -> argparse.ArgumentParser:
         ("brightness", "set or print panel brightness"),
         ("status", "print daemon status"),
         ("scenes", "list available scenes"),
-        ("notify", "scroll a message, then restore the previous scene"),
     ]:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("args", nargs="*")
         # "scenes" is friendlier on the command line than the wire command.
         p.set_defaults(func=cmd_ctl, command="list" if name == "scenes" else name)
+
+    p_notify = sub.add_parser(
+        "notify", help="scroll a message, then restore the previous scene"
+    )
+    p_notify.add_argument("message")
+    p_notify.add_argument("--direction", default="up", choices=["up", "down"],
+                          help="scroll direction; glyph rotation follows it so "
+                               "the message reads correctly either way")
+    p_notify.add_argument("--speed", type=float, default=14.0,
+                          help="rows per second (default: 14)")
+    p_notify.set_defaults(func=cmd_notify)
+
+    p_alert = sub.add_parser(
+        "alert", help="flash a wordless pattern, then restore"
+    )
+    p_alert.add_argument("pattern")
+    p_alert.add_argument("--repeat", type=int, default=1,
+                         help="replay the pattern N times (default: 1)")
+    p_alert.set_defaults(func=cmd_alert)
+
+    p_alerts = sub.add_parser("alerts", help="list alert patterns")
+    p_alerts.add_argument("args", nargs="*")
+    p_alerts.set_defaults(func=cmd_ctl, command="alerts")
 
     p_clear = sub.add_parser("clear", help="blank all panels")
     p_clear.set_defaults(func=cmd_clear)

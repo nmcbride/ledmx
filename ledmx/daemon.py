@@ -22,6 +22,7 @@ from pathlib import Path
 
 from dataclasses import dataclass, field
 
+from . import alerts as alerts_mod
 from . import dither
 from . import layout as layout_mod
 from . import scenes as scenes_mod
@@ -54,6 +55,33 @@ def wait_for_panels(timeout: float = 60.0, interval: float = 2.0) -> None:
         "no readable LED matrix found - check the modules are seated and that "
         "the udev rules from hardware.inputmodule.enable are installed"
     )
+
+
+def _split_options(args: list[str]) -> tuple[dict[str, str], str]:
+    """Split leading ``--key value`` pairs from the trailing free text.
+
+    A bare ``--`` ends the options and everything after it is message, taken
+    verbatim. Without that terminator a message merely *beginning* with a dash
+    gets silently eaten as an option and its first two words disappear - which
+    matters here because callers send arbitrary text they did not write, and a
+    truncated notification is worse than a rejected one.
+
+    Options are still recognised without the terminator, so short commands typed
+    by hand stay convenient; the terminator is what makes them unambiguous when
+    something else is generating the call.
+    """
+    opts: dict[str, str] = {}
+    i = 0
+    while i < len(args):
+        if args[i] == "--":
+            i += 1
+            break
+        if args[i].startswith("--") and i + 1 < len(args):
+            opts[args[i][2:]] = args[i + 1]
+            i += 2
+            continue
+        break
+    return opts, " ".join(args[i:])
 
 
 @dataclass
@@ -223,14 +251,23 @@ class Daemon:
     def set_scene(self, name: str, *, now: float) -> str:
         return self._set_all(name, now=now)
 
-    def notify(self, message: str, *, now: float) -> str:
+    def notify(
+        self,
+        message: str,
+        *,
+        now: float,
+        direction: str = "up",
+        speed: float = 14.0,
+    ) -> str:
         """Interrupt with a scrolling message, then restore what was showing.
 
         The previous assignments are saved rather than recomputed, so a
         notification cannot disturb per-panel setups: whatever each panel was
         doing, including its scene clock, comes back exactly as it was.
         """
-        producer, duration = scenes_mod.notification(message, self.names)
+        producer, duration = scenes_mod.notification(
+            message, self.names, direction=direction, speed=speed
+        )
         group = _Group(
             panels=list(self.names), scene="notify", producer=producer,
             started=now,
@@ -245,6 +282,23 @@ class Daemon:
             self._notify_until = now + duration
         self._apply_mode(group)
         return f"{duration:.1f}s"
+
+    def alert(self, name: str, *, now: float, repeat: int = 1) -> str:
+        """Interrupt with a wordless pattern, then restore - same as notify."""
+        producer, duration, mode, fps = alerts_mod.build(
+            name, self.names, repeat=repeat
+        )
+        group = _Group(
+            panels=list(self.names), scene=f"alert:{name}", producer=producer,
+            started=now, mode=mode, fps=fps, deadline=0.0,
+        )
+        with self._lock:
+            if self._interrupted is None:
+                self._interrupted = list(self._groups)
+            self._groups = [group]
+            self._notify_until = now + duration
+        self._apply_mode(group)
+        return f"{name} {duration:.1f}s"
 
     def _restore_if_done(self, now: float) -> None:
         with self._lock:
@@ -292,10 +346,26 @@ class Daemon:
                 if not args:
                     return f"OK {self.brightness}"
                 return f"OK {self.set_brightness(int(args[0]))}"
+            if cmd == "alert":
+                opts, rest = _split_options(args)
+                target = rest.split()[0] if rest else ""
+                if not target:
+                    return "ERR alert needs a pattern name"
+                return "OK alert " + self.alert(
+                    target, now=now, repeat=int(opts.get("repeat", 1))
+                )
+            if cmd == "alerts":
+                return "OK " + " ".join(sorted(alerts_mod.ALERTS))
             if cmd == "notify":
-                if not args:
+                opts, message = _split_options(args)
+                if not message:
                     return "ERR notify needs a message"
-                return f"OK notify {self.notify(' '.join(args), now=now)}"
+                return "OK notify " + self.notify(
+                    message,
+                    now=now,
+                    direction=opts.get("direction", "up"),
+                    speed=float(opts.get("speed", 14.0)),
+                )
             if cmd == "off":
                 return f"OK {self.set_scene('off', now=now)}"
             if cmd == "list":

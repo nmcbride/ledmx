@@ -56,9 +56,20 @@ class ScrollingText:
 
         strip_h, strip_w = self.strip.shape
         travelled = int(t * self.speed)
-        # Scrolling up walks forward through the strip; scrolling down walks
-        # backward. Modulo keeps both wrapping cleanly.
-        offset = (travelled if self.direction == "up" else -travelled) % strip_h
+
+        # The starting window differs by direction, because the rotation puts
+        # the first character at opposite ends of the strip.
+        #
+        # Scrolling up rotates clockwise, so the message begins at the top and
+        # the window walks forward from row 0. Scrolling down rotates
+        # anticlockwise, so the message begins at the *bottom* - the window has
+        # to start there and walk backward, or the text plays end-first. That
+        # still looks like scrolling text at a glance, which is exactly why it
+        # is easy to miss.
+        if self.direction == "up":
+            offset = travelled % strip_h
+        else:
+            offset = (strip_h - self.h - travelled) % strip_h
         rows = np.arange(offset, offset + self.h) % strip_h
         w = min(self.w, strip_w)
         x = (self.w - w) // 2
