@@ -105,7 +105,13 @@ class ClockPanel:
             # Fractional seconds so the bar advances smoothly rather than
             # stepping once a second - at 6 fps a stepping bar reads as a
             # stutter.
-            fraction = (now.tm_sec + (t % 1.0)) / 60.0
+            #
+            # Both parts must come from the *same* clock. Adding the scene
+            # clock's fractional part to a wall-clock second mixes two
+            # unsynchronised ramps: the scene fraction wraps to zero on its own
+            # phase, so the total drops back before tm_sec increments and the
+            # bar visibly steps forward, back, then forward again.
+            fraction = (time.time() % 60.0) / 60.0
             lit = int(fraction * self.w)
             row = self.h - self.seconds_h
             if lit > 0:
