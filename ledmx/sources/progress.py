@@ -25,7 +25,7 @@ import numpy as np
 
 from .. import font
 from ..protocol import HEIGHT, WIDTH
-from .draw import Region, block, fill, marker, segments
+from .draw import Region, block, fill, line, marker, segments
 
 Size = tuple[int, int]
 
@@ -51,9 +51,10 @@ SPIN_DIRECTIONS = ("up", "down", "left", "right", "cw", "ccw")
 STYLES = ("bar", "blocks", "spin", "big", "sparkline")
 
 #: Styles that print a number under the body. The rest reclaim those rows:
-#: counting blocks *is* the readout, a spinner has no value to print, and
-#: `big` is nothing but its number.
-HAS_READOUT = {"bar": True, "sparkline": True}
+#: counting blocks is the readout, a spinner has no value, `big` is nothing
+#: but its number, and a sparkline is about shape - the absolute value is a
+#: different gauge's job, and those six rows are better spent on the trace.
+HAS_READOUT = {"bar": True}
 
 
 @dataclass
@@ -160,21 +161,36 @@ class Gauge:
         return ""
 
     def _sparkline(self, out: np.ndarray, region: Region) -> str:
-        """Recent samples as narrow bars - shows trend, not just level.
+        """Recent samples as a connected line - trend, not level.
 
-        The only gauge here that answers "where has this been" rather than
-        "where is it now". A bar at 60% says nothing about whether it was 30%
-        a minute ago.
+        Scaled to the range of the samples themselves, not to 0-100. A
+        sparkline shows shape, so it has to work for any units: request
+        latency in milliseconds, a queue depth of six, a price near 40,000.
+        Fixing the scale to a percentage would flatten most real series into a
+        straight line at the bottom of the panel.
+
+        The consequence worth knowing is that vertical position means nothing
+        on its own - only the shape does. A flat line high up and a flat line
+        low down are the same reading. There is deliberately no number: an
+        absolute value is what `bar` or `big` are for, and those six rows buy a
+        taller trace.
         """
         samples = self.state.history[-self.history:]
         if not samples:
             return ""
-        columns = region.split(self.history, 0, self.w)
-        # Right-align, so the newest sample is always in the same place and the
-        # chart grows leftward rather than sliding.
-        for col, value in zip(columns[-len(samples):], samples):
-            fill(out, col, float(value) / 100.0, level=BAR_LEVEL)
-        return str(int(round(samples[-1])))
+
+        low, high = min(samples), max(samples)
+        span = high - low
+        if span <= 0:
+            # Every sample identical: draw it mid-height. Scaling by a zero
+            # range would divide by zero, and pinning it to the bottom would
+            # imply a low value when the series may be steady at any level.
+            scaled = [0.5] * len(samples)
+        else:
+            scaled = [(v - low) / span for v in samples]
+
+        line(out, region, scaled, level=TEXT_LEVEL)
+        return ""
 
     def _spin(self, out: np.ndarray, region: Region, t: float) -> str:
         """Indeterminate animation. Carries no value - it is not a gauge.

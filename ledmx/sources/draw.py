@@ -144,6 +144,46 @@ def marker(
     return row
 
 
+def line(
+    out: np.ndarray,
+    region: Region,
+    values: list[float],
+    *,
+    level: int,
+    connect: bool = True,
+) -> None:
+    """Plot `values` (0.0-1.0) as a line, one point per column.
+
+    A line, not a fill - that is what distinguishes a sparkline from a column
+    chart. The shape of the trace carries the information; filling underneath
+    it adds ink without adding meaning.
+
+    `connect` draws the vertical run between consecutive points. Across nine
+    columns an unconnected trace is a scattering of single pixels, which reads
+    as noise rather than as a trend; joining them is what makes it a line.
+    """
+    if not values:
+        return
+    right = out.shape[1] if region.right is None else region.right
+    span = right - region.left
+    points = values[-span:]
+    x0 = right - len(points)
+
+    previous: int | None = None
+    for i, value in enumerate(points):
+        v = float(np.clip(value, 0.0, 1.0))
+        row = region.bottom - 1 - int(round(v * (region.rows - 1)))
+        row = max(region.top, min(region.bottom - 1, row))
+        x = x0 + i
+
+        if connect and previous is not None:
+            lo, hi = sorted((previous, row))
+            out[lo:hi + 1, x] = level
+        else:
+            out[row, x] = level
+        previous = row
+
+
 def block(
     out: np.ndarray, region: Region, position: float, height: int, *, level: int
 ) -> None:
