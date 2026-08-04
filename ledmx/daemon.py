@@ -100,6 +100,9 @@ class Daemon:
         self._stop = threading.Event()
         self._groups: list[_Group] = []
         self._writers: dict[str, _PanelWriter] = {}
+        #: Saved assignments while a notification is showing, restored after.
+        self._interrupted: list[_Group] | None = None
+        self._notify_until = 0.0
         self._set_all(scene, now=0.0)
 
         for panel in self.panels.values():
@@ -220,6 +223,42 @@ class Daemon:
     def set_scene(self, name: str, *, now: float) -> str:
         return self._set_all(name, now=now)
 
+    def notify(self, message: str, *, now: float) -> str:
+        """Interrupt with a scrolling message, then restore what was showing.
+
+        The previous assignments are saved rather than recomputed, so a
+        notification cannot disturb per-panel setups: whatever each panel was
+        doing, including its scene clock, comes back exactly as it was.
+        """
+        producer, duration = scenes_mod.notification(message, self.names)
+        group = _Group(
+            panels=list(self.names), scene="notify", producer=producer,
+            started=now,
+            # 1-bit at high frame rate: text is binary, and a message that
+            # scrolls smoothly is easier to read than one that steps.
+            mode="bw", fps=50.0, deadline=0.0,
+        )
+        with self._lock:
+            if self._interrupted is None:
+                self._interrupted = list(self._groups)
+            self._groups = [group]
+            self._notify_until = now + duration
+        self._apply_mode(group)
+        return f"{duration:.1f}s"
+
+    def _restore_if_done(self, now: float) -> None:
+        with self._lock:
+            if self._interrupted is None or now < self._notify_until:
+                return
+            groups = self._interrupted
+            self._interrupted = None
+            self._groups = groups
+            # Resume where each group left off rather than restarting it.
+            for group in groups:
+                group.deadline = 0.0
+        for group in groups:
+            self._apply_mode(group)
+
     def set_brightness(self, percent: int) -> int:
         percent = max(0, min(100, percent))
         with self._lock:
@@ -253,6 +292,10 @@ class Daemon:
                 if not args:
                     return f"OK {self.brightness}"
                 return f"OK {self.set_brightness(int(args[0]))}"
+            if cmd == "notify":
+                if not args:
+                    return "ERR notify needs a message"
+                return f"OK notify {self.notify(' '.join(args), now=now)}"
             if cmd == "off":
                 return f"OK {self.set_scene('off', now=now)}"
             if cmd == "list":
@@ -343,9 +386,10 @@ class Daemon:
         try:
             while not self._stop.is_set():
                 now = time.perf_counter()
+                elapsed = now - self._t0
+                self._restore_if_done(elapsed)
                 with self._lock:
                     groups = list(self._groups)
-                elapsed = now - self._t0
 
                 for group in groups:
                     if now < group.deadline:

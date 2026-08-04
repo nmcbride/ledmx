@@ -129,6 +129,34 @@ def _monitor(layout: Layout, names: list[str]) -> Producer:
     return produce
 
 
+def notification(
+    message: str, names: list[str], *, speed: float = 14.0
+) -> tuple[Producer, float]:
+    """A one-shot scrolling message, plus how long it needs to finish.
+
+    Every panel shows the same message rather than splitting it. A message
+    divided across panels is unreadable the moment they are not adjacent, and
+    notifications are exactly the case where you glance at whichever panel
+    happens to be in view rather than reading both.
+
+    The duration is derived from the rendered strip so the message scrolls past
+    exactly once - a fixed timeout would either truncate long messages or leave
+    short ones sitting there after they had been read.
+    """
+    from .sources.text import ScrollingText
+
+    source = ScrollingText(message, (HEIGHT, WIDTH), speed=speed, direction="up")
+    rows = source.strip.shape[0] if source.strip.size else HEIGHT
+    # One full pass, plus the panel height so the tail clears the display.
+    duration = (rows + HEIGHT) / speed
+
+    def produce(t: float):
+        frame = source(t)
+        return {name: frame for name in names}
+
+    return produce, duration
+
+
 def _blank(layout: Layout, names: list[str]) -> Producer:
     dark = np.zeros((HEIGHT, WIDTH), dtype=np.uint8)
 

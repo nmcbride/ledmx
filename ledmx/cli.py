@@ -349,6 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("brightness", "set or print panel brightness"),
         ("status", "print daemon status"),
         ("scenes", "list available scenes"),
+        ("notify", "scroll a message, then restore the previous scene"),
     ]:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("args", nargs="*")
