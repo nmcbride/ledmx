@@ -22,10 +22,11 @@ from pathlib import Path
 
 from dataclasses import dataclass, field
 
+from . import dither
 from . import layout as layout_mod
 from . import scenes as scenes_mod
 from .device import Panel, discover, open_panels
-from .protocol import WIDTH
+from .protocol import HEIGHT, WIDTH
 from .runner import _PanelWriter
 
 
@@ -68,6 +69,12 @@ class _Group:
     scene: str
     producer: object
     started: float
+    #: Render mode and rate come from the scene, not the daemon: a clock wants
+    #: tone at 6 fps while a spectrum wants speed at 55, and with per-panel
+    #: assignment both can be live at once.
+    mode: str = "greyscale"
+    fps: float = 6.0
+    deadline: float = 0.0
 
 
 class Daemon:
@@ -92,6 +99,7 @@ class Daemon:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._groups: list[_Group] = []
+        self._writers: dict[str, _PanelWriter] = {}
         self._set_all(scene, now=0.0)
 
         for panel in self.panels.values():
@@ -136,10 +144,25 @@ class Daemon:
     # -- scene assignment --------------------------------------------------
 
     def _build(self, names: list[str], scene: str, now: float) -> "_Group":
+        spec = scenes_mod.get(scene)
         sub = self.layout.subset(names)
-        producer = scenes_mod.get(scene).build(sub, names)
-        return _Group(panels=list(names), scene=scene, producer=producer,
-                      started=now)
+        producer = spec.build(sub, names)
+        group = _Group(panels=list(names), scene=scene, producer=producer,
+                       started=now, mode=spec.mode, fps=spec.fps, deadline=0.0)
+        self._apply_mode(group)
+        return group
+
+    def _apply_mode(self, group: "_Group") -> None:
+        """Point each panel's writer at the render path its scene wants."""
+        ditherer = None
+        if group.mode == "bw":
+            # Plain threshold, no dithering: this mode exists for content that
+            # is already binary, where a halftone pattern would only add noise.
+            ditherer = dither.Threshold((HEIGHT, WIDTH))
+        for name in group.panels:
+            writer = self._writers.get(name)
+            if writer is not None:
+                writer.set_ditherer(ditherer)
 
     def _set_all(self, scene: str, *, now: float) -> str:
         """One scene across every panel, sharing a single canvas.
@@ -304,21 +327,33 @@ class Daemon:
         writers = {
             name: _PanelWriter(name, panel) for name, panel in self.panels.items()
         }
+        self._writers = writers
+        with self._lock:
+            groups = list(self._groups)
+        for group in groups:
+            self._apply_mode(group)
         for w in writers.values():
             w.start()
 
         self._t0 = time.perf_counter()
         threading.Thread(target=self._serve, args=(server,), daemon=True).start()
 
-        interval = 1.0 / self.fps
-        deadline = self._t0
+        # Fine tick; each group fires on its own schedule.
+        tick = 1.0 / 240.0
         try:
             while not self._stop.is_set():
                 now = time.perf_counter()
                 with self._lock:
                     groups = list(self._groups)
                 elapsed = now - self._t0
+
                 for group in groups:
+                    if now < group.deadline:
+                        continue
+                    interval = 1.0 / max(1.0, group.fps)
+                    # Never try to catch up on a missed deadline; just take the
+                    # next one from here.
+                    group.deadline = max(now + interval, group.deadline + interval)
                     # Each group keeps its own clock, so a scene assigned to
                     # one panel starts from zero rather than joining another
                     # panel's animation mid-cycle.
@@ -328,12 +363,7 @@ class Daemon:
                         if writer is not None:
                             writer.submit(frame)
 
-                deadline += interval
-                slack = deadline - time.perf_counter()
-                if slack > 0:
-                    time.sleep(slack)
-                else:
-                    deadline = time.perf_counter()
+                time.sleep(tick)
         except KeyboardInterrupt:
             pass
         finally:

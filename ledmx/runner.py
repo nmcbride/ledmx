@@ -42,6 +42,8 @@ class _PanelWriter(threading.Thread):
     def __init__(self, name: str, panel: Panel, ditherer=None):
         super().__init__(name=f"ledmx-{name}", daemon=True)
         self.panel = panel
+        #: Swappable at runtime: a panel's render mode follows whichever scene
+        #: is currently assigned to it, and that can change under a hotkey.
         self.ditherer = ditherer
         self._pending: Frame | None = None
         self._latest: Frame | None = None
@@ -59,44 +61,39 @@ class _PanelWriter(threading.Thread):
             self._latest = frame
         self._wake.set()
 
+    def set_ditherer(self, ditherer) -> None:
+        """Switch render mode. None means native greyscale."""
+        with self._lock:
+            self.ditherer = ditherer
+
     def run(self) -> None:
-        if self.ditherer is None:
-            self._run_greyscale()
-        else:
-            self._run_dithered()
-
-    def _run_greyscale(self) -> None:
-        while not self._stop.is_set():
-            if not self._wake.wait(timeout=0.1):
-                continue
-            self._wake.clear()
-            with self._lock:
-                frame, self._pending = self._pending, None
-            if frame is None:
-                continue
-            try:
-                self.panel.show(frame)
-                self.written += 1
-            except OSError:
-                break
-
-    def _run_dithered(self) -> None:
         phase = 0
         while not self._stop.is_set():
             with self._lock:
-                frame = self._latest
+                ditherer = self.ditherer
+                if ditherer is None:
+                    frame, self._pending = self._pending, None
+                else:
+                    frame = self._latest
+
             if frame is None:
-                # Nothing to show yet; wait briefly for the first frame.
+                # Nothing pending; wait briefly rather than spinning.
                 if not self._wake.wait(timeout=0.05):
                     continue
                 self._wake.clear()
                 continue
+
             try:
-                self.panel.show_bw(self.ditherer(frame, phase))
+                if ditherer is None:
+                    self.panel.show(frame)
+                else:
+                    self.panel.show_bw(ditherer(frame, phase))
+                    phase += 1
                 self.written += 1
-                phase += 1
             except OSError:
                 break
+            if ditherer is None:
+                self._wake.clear()
 
     def stop(self) -> None:
         self._stop.set()

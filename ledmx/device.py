@@ -187,8 +187,23 @@ class Panel:
         self._serial.write(payload)
 
     def send_all(self, payloads: list[bytes]) -> None:
+        """Write a frame's commands and wait for the device to drain them.
+
+        The flush is what keeps the display current. write() returns as soon as
+        the kernel accepts the bytes, so submitting frames faster than the
+        module can consume them fills the tty buffer instead of blocking - and
+        a few KB of buffer against ~2.2 KB/s of real throughput is one to two
+        seconds of standing backlog. Frames already handed to the kernel cannot
+        be dropped, so the display ends up showing audio that finished playing a
+        second ago.
+
+        Draining after each frame makes the writer pace itself to the hardware.
+        Frames that arrive while it is blocked are dropped by the caller, which
+        is the correct behaviour: for animation, current beats complete.
+        """
         for payload in payloads:
             self._serial.write(payload)
+        self._serial.flush()
 
     # -- display -----------------------------------------------------------
 
@@ -206,6 +221,9 @@ class Panel:
     def show_bw(self, pixels: np.ndarray) -> None:
         """Display a (34, 9) 1-bit frame - one command, so ~10x the frame rate."""
         self.send(protocol.bw_frame(pixels))
+        # Drain for the same reason as send_all: without it, frames queue in
+        # the kernel tty buffer and the display runs behind reality.
+        self._serial.flush()
 
     def clear(self) -> None:
         self.send_all(protocol.blank())
