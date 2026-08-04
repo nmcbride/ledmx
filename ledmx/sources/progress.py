@@ -116,59 +116,37 @@ class Gauge:
         return str(int(round(fraction * 100)))
 
     def _draw_blocks(self, out: np.ndarray) -> str:
-        """Discrete countable segments, with larger step counts folded to fit.
+        """One block per step, up to MAX_BLOCKS. No number underneath.
 
-        Works at any total: steps beyond MAX_BLOCKS are folded so each drawn
-        segment stands for several of them, rather than the style degrading to
-        a plain fill exactly when there are enough steps to be worth counting.
-
-        The readout always reports the real count. Folding is a display
-        constraint and should not change the number a caller is told.
+        Never folds several steps into one block. Folding breaks the only
+        property this style has over `bar` - that a block *is* a step - and
+        then needs clamping at both ends to stop "nearly done" rendering as
+        "done". Callers asking for more steps than fit get clamped instead.
         """
-        total = max(1, int(self.state.total or 1))
-        done = int(np.clip(self.state.value, 0, total))
+        drawn = max(1, min(int(self.state.total or 1), MAX_BLOCKS))
+        lit = int(np.clip(self.state.value, 0, drawn))
 
-        # Fold the steps onto however many segments the panel can actually
-        # separate. A countable segment needs a lit row plus a blank row, so
-        # 22 body rows cap it at MAX_BLOCKS; beyond that each drawn segment
-        # stands for several steps. Dropping to a plain fill instead would
-        # abandon the one thing this style is for - being countable - exactly
-        # when the step count is high enough to be worth counting.
-        drawn = min(total, MAX_BLOCKS)
-        lit = int(round(done / total * drawn))
-        # Clamp both ends so the two states that matter most stay unambiguous.
-        # Any progress lights at least one segment, so "started" never looks
-        # like "not started"; anything short of complete leaves one unlit, so
-        # "nearly done" never looks like "done". Without the upper clamp,
-        # folding 40 steps onto 11 segments renders 39 and 40 identically -
-        # and being told a job has finished when it has not is the worse of
-        # the two errors.
-        if done > 0:
-            lit = max(1, lit)
-        if done < total:
-            lit = min(lit, drawn - 1)
+        # Blocks use the readout's space as well as the body. Counting the
+        # blocks *is* the readout, so printing the same number underneath is
+        # redundant - and those six rows are the difference between fitting
+        # seven blocks and fitting nine.
+        top_limit = self.body_top
+        bottom = self.h
 
-        # Segment height stays fractional and is rounded per edge, so the stack
-        # spans the whole body. Integer division discards the remainder: 22
-        # rows over 8 steps gives 2 rows each, filling 16 and leaving 6
-        # permanently dark, so a finished task displays as two thirds complete.
-        segment = self.body_rows / drawn
+        # Uniform blocks, uniform single-row gaps. Any remainder is simply left
+        # dark at the top rather than padded into some of the gaps: unequal
+        # gaps read as if the spacing meant something, and nothing here does.
+        gaps = max(0, drawn - 1)
+        block = max(1, (bottom - top_limit - gaps) // drawn)
 
-        # Fill the exact fraction, then carve gaps at the internal boundaries.
-        # Giving each segment its own gap costs a row at whichever end the gap
-        # sits, so the stack could never reach the top; only the boundaries
-        # *between* segments need separating.
-        top = max(self.body_top, int(round(self.body_bottom - lit * segment)))
-        if top < self.body_bottom:
-            out[top:self.body_bottom, :] = BAR_LEVEL
-        for i in range(1, lit):
-            row = int(round(self.body_bottom - i * segment))
-            if self.body_top <= row < self.body_bottom:
-                out[row, :] = 0
+        for _ in range(lit):
+            top = bottom - block
+            if top < top_limit:
+                break
+            out[top:bottom, :] = BAR_LEVEL
+            bottom = top - 1
 
-        # Readout is the real count, not the segment count - the folding is a
-        # display constraint and should not change the number reported.
-        return str(done)
+        return ""
 
     def _draw_spin(self, out: np.ndarray, t: float) -> str:
         """A block sliding up and back. Deliberately never completes."""
@@ -228,6 +206,6 @@ class Gauge:
 #: count eight or ten with effort - beyond that they stop counting and start
 #: estimating proportion, at which point the segments have stopped doing their
 #: job. Fewer segments also means chunkier ones, which are easier to tell apart.
-MAX_BLOCKS = 10
+MAX_BLOCKS = 9
 
 STYLES = ("bar", "blocks", "spin", "big")

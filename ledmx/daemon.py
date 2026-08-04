@@ -27,7 +27,7 @@ from . import dither
 from . import layout as layout_mod
 from . import scenes as scenes_mod
 from .device import Panel, discover, open_panels
-from .sources.progress import Gauge, GaugeState, STYLES
+from .sources.progress import Gauge, GaugeState, MAX_BLOCKS, STYLES
 from .protocol import HEIGHT, WIDTH
 from .runner import _PanelWriter
 
@@ -323,6 +323,14 @@ class Daemon:
                 f"unknown style '{style}'; choose from {', '.join(STYLES)}"
             )
 
+        # Only so many blocks fit on the panel, so that is the limit. Clamping
+        # keeps the style doing one thing.
+        converted = ""
+        if total and total > MAX_BLOCKS:
+            total = float(MAX_BLOCKS)
+            value = min(value, total)
+            converted = f" (capped at {MAX_BLOCKS})"
+
         existing = self._gauges.get(panel)
         owns_panel = any(
             g.scene == "gauge" and panel in g.panels for g in self._groups
@@ -333,7 +341,7 @@ class Daemon:
             existing.label = label
             existing.value = value
             existing.total = total
-            return f"{panel}={style} {value:g}"
+            return f"{panel}={style} {value:g}{converted}"
 
         state = GaugeState(label=label, value=value, style=style, total=total)
         self._gauges[panel] = state
