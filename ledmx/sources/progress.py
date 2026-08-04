@@ -114,18 +114,45 @@ class Gauge:
         return str(int(round(fraction * 100)))
 
     def _draw_blocks(self, out: np.ndarray) -> str:
-        total = int(self.state.total or 1)
+        """Discrete segments, or a proportional fill when they cannot be drawn.
+
+        A countable segment needs at least one lit row plus one blank row to
+        separate it from its neighbour, so the body's 22 rows cap this at 11
+        steps. Beyond that the gap rounds to zero and the segments merge into a
+        continuous fill - which renders pixel-for-pixel identically to `bar`
+        while still calling itself something else. Falling back explicitly is
+        more honest than silently drawing the wrong style.
+
+        The count readout is kept either way: for step-based progress "9" is
+        more use than the percentage it happens to correspond to.
+        """
+        total = max(1, int(self.state.total or 1))
         done = int(np.clip(self.state.value, 0, total))
-        # Segments with a gap between them; the gap is what makes them
-        # countable rather than a single fill.
-        segment = max(1, self.body_rows // max(1, total))
-        thickness = max(1, segment - 1)
-        for i in range(done):
-            bottom = self.body_bottom - i * segment
-            top = bottom - thickness
-            if top < self.body_top:
-                break
-            out[top:bottom, :] = BAR_LEVEL
+
+        # Segment height stays fractional and is rounded per edge, so the
+        # segments span the whole body. Integer division instead discards the
+        # remainder: 22 rows over 8 steps gives 2 rows each, filling 16 and
+        # leaving 6 permanently dark, so a finished task displays as roughly
+        # two thirds complete. "Done" has to look done.
+        segment = self.body_rows / total
+        if segment < 2.0:
+            # No room for a separating gap; draw the fraction instead.
+            filled = int(round(done / total * self.body_rows))
+            if filled:
+                out[self.body_bottom - filled:self.body_bottom, :] = BAR_LEVEL
+            return str(done)
+
+        # Fill the exact fraction, then carve gaps at the internal boundaries.
+        # Building each segment with its own gap costs a row at whichever end
+        # the gap sits, so the stack never quite reaches the top even when
+        # complete. Only the boundaries *between* segments need separating.
+        top = max(self.body_top, int(round(self.body_bottom - done * segment)))
+        if top < self.body_bottom:
+            out[top:self.body_bottom, :] = BAR_LEVEL
+        for i in range(1, done):
+            row = int(round(self.body_bottom - i * segment))
+            if self.body_top <= row < self.body_bottom:
+                out[row, :] = 0
         return str(done)
 
     def _draw_spin(self, out: np.ndarray, t: float) -> str:
@@ -180,5 +207,9 @@ class Gauge:
         self._last_t = t
         return out
 
+
+#: Most steps that can be drawn as countable segments. Above this the gap
+#: between them rounds to zero and "blocks" degrades to a plain fill.
+MAX_BLOCKS = 11
 
 STYLES = ("bar", "blocks", "spin", "big")
