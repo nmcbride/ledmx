@@ -253,6 +253,10 @@ def cmd_gauge(args: argparse.Namespace) -> None:
         parts += ["--style", args.style]
     if args.of is not None:
         parts += ["--of", str(args.of)]
+    if args.spinner:
+        parts += ["--spinner", args.spinner]
+    if args.direction:
+        parts += ["--direction", args.direction]
     parts += ["--", args.panel, args.label]
     if args.value is not None:
         parts.append(str(args.value))
@@ -427,10 +431,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_gauge.add_argument("panel")
     p_gauge.add_argument("label")
     p_gauge.add_argument("value", nargs="?", type=float, default=None)
-    p_gauge.add_argument("--style", choices=["bar", "blocks", "spin", "big"],
+    p_gauge.add_argument("--style",
+                         choices=["bar", "blocks", "spin", "big", "sparkline"],
                          default=None,
                          help="bar: 0-100%%; blocks: discrete steps (implied "
                               "by --of); spin: unknown duration; big: a count")
+    p_gauge.add_argument("--spinner",
+                         choices=["slide", "orbit", "chase", "wave"],
+                         default=None,
+                         help="which indeterminate animation; implies "
+                              "--style spin")
+    p_gauge.add_argument("--direction",
+                         choices=["up", "down", "left", "right", "cw", "ccw"],
+                         default=None,
+                         help="travel direction: up/down for slide and chase, "
+                              "left/right for wave, cw/ccw for orbit")
     p_gauge.add_argument("--of", type=float, default=None,
                          help="total for step counting, e.g. 5 --of 12")
     p_gauge.set_defaults(func=cmd_gauge)

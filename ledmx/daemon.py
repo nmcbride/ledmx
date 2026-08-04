@@ -27,7 +27,9 @@ from . import dither
 from . import layout as layout_mod
 from . import scenes as scenes_mod
 from .device import Panel, discover, open_panels
-from .sources.progress import Gauge, GaugeState, MAX_BLOCKS, STYLES
+from .sources.progress import (
+    Gauge, GaugeState, MAX_BLOCKS, SPINNERS, SPIN_DIRECTIONS, STYLES,
+)
 from .protocol import HEIGHT, WIDTH
 from .runner import _PanelWriter
 
@@ -307,6 +309,7 @@ class Daemon:
     def set_gauge(
         self, panel: str, label: str, value: float, *,
         now: float, style: str = "bar", total: float | None = None,
+        spinner: str = "slide", direction: str = "up",
     ) -> str:
         """Show or update a progress gauge on one panel.
 
@@ -340,10 +343,20 @@ class Daemon:
         if existing is not None and owns_panel and existing.style == style:
             existing.label = label
             existing.value = value
+            # Sparklines accumulate: each update is another sample, which is
+            # what makes them show a trend rather than a level.
+            if style == "sparkline":
+                existing.history.append(value)
+                del existing.history[:-WIDTH]
             existing.total = total
+            existing.spinner = spinner
+            existing.direction = direction
             return f"{panel}={style} {value:g}{converted}"
 
-        state = GaugeState(label=label, value=value, style=style, total=total)
+        state = GaugeState(label=label, value=value, style=style, total=total,
+                           spinner=spinner, direction=direction)
+        if style == "sparkline":
+            state.history.append(value)
         self._gauges[panel] = state
         gauge = Gauge(state, (HEIGHT, WIDTH))
 
@@ -429,9 +442,22 @@ class Daemon:
                 panel, label = words[0], words[1]
                 value = float(words[2]) if len(words) > 2 else 0.0
                 total = float(opts["of"]) if "of" in opts else None
-                style = opts.get("style", "blocks" if total else "bar")
+                spinner = opts.get("spinner", "slide")
+                direction = opts.get("direction", "up")
+                if direction not in SPIN_DIRECTIONS:
+                    return f"ERR unknown direction '{direction}'; " + \
+                           f"choose from {', '.join(SPIN_DIRECTIONS)}"
+                if spinner not in SPINNERS:
+                    return f"ERR unknown spinner '{spinner}'; " + \
+                           f"choose from {', '.join(SPINNERS)}"
+                # Naming a spinner implies you want one.
+                default_style = "blocks" if total else "bar"
+                if "spinner" in opts:
+                    default_style = "spin"
+                style = opts.get("style", default_style)
                 return "OK gauge " + self.set_gauge(
-                    panel, label, value, now=now, style=style, total=total
+                    panel, label, value, now=now, style=style, total=total,
+                    spinner=spinner, direction=direction,
                 )
             if cmd == "alert":
                 opts, rest = _split_options(args)
