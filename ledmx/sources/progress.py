@@ -33,6 +33,7 @@ BAR_LEVEL = 120
 TEXT_LEVEL = 255
 SPIN_LEVEL = 255
 PEAK_LEVEL = 185
+ZERO_LEVEL = 60
 
 #: Most steps drawn as separate blocks. The cap is perceptual rather than
 #: physical: people read about four items instantly and can count nine or ten
@@ -48,13 +49,13 @@ SPINNERS = ("slide", "orbit", "chase", "wave")
 #: so ignores this entirely.
 SPIN_DIRECTIONS = ("up", "down", "left", "right", "cw", "ccw")
 
-STYLES = ("bar", "blocks", "spin", "big", "sparkline")
+STYLES = ("bar", "blocks", "spin", "big", "sparkline", "dual", "bipolar")
 
 #: Styles that print a number under the body. The rest reclaim those rows:
 #: counting blocks is the readout, a spinner has no value, `big` is nothing
 #: but its number, and a sparkline is about shape - the absolute value is a
 #: different gauge's job, and those six rows are better spent on the trace.
-HAS_READOUT = {"bar": True}
+HAS_READOUT = {"bar": True, "bipolar": True}
 
 
 @dataclass
@@ -70,6 +71,8 @@ class GaugeState:
     #: orbit. Direction identifies a job as readily as shape does, but only for
     #: spinners that travel one way - `slide` bounces, so it ignores this.
     direction: str = "up"
+    #: Second value, for `dual`.
+    second: float = 0.0
     #: Recent values, for `sparkline`. Newest last.
     history: list[float] = field(default_factory=list)
 
@@ -192,6 +195,46 @@ class Gauge:
         line(out, region, scaled, level=TEXT_LEVEL)
         return ""
 
+    def _dual(self, out: np.ndarray, region: Region) -> str:
+        """Two bars side by side, for values that only mean anything as a pair.
+
+        Sent and received, passing and failing, arrivals and completions: one
+        of these numbers alone is ambiguous, and the interesting reading is
+        usually the *gap* between them. Four columns each is cruder than a
+        single full-width bar, which is the price of seeing both at once.
+        """
+        left, right = region.split(2, 1, self.w)
+        fill(out, left, float(np.clip(self.state.value, 0, 100)) / 100.0,
+             level=BAR_LEVEL)
+        fill(out, right, float(np.clip(self.state.second, 0, 100)) / 100.0,
+             level=BAR_LEVEL)
+        return ""
+
+    def _bipolar(self, out: np.ndarray, region: Region) -> str:
+        """Fills up or down from a zero line, for signed values.
+
+        A bottom-anchored bar cannot express negative at all: it either clamps
+        to zero and loses the information, or remaps -100..+100 onto 0..100, at
+        which point "no change" sits mid-bar and reads as half full rather than
+        as nothing.
+
+        Direction carries the sign and length the magnitude, so it is legible
+        without reading the number. Right for anything where zero is meaningful
+        - ahead or behind schedule, latency against a baseline, net change.
+        """
+        value = float(np.clip(self.state.value, -100.0, 100.0))
+        # Zero line drawn dim and always visible, so an empty panel reads as
+        # "no change" rather than as "not working".
+        middle = (region.top + region.bottom) // 2
+        out[middle, region.columns(self.w)] = ZERO_LEVEL
+        fill(out, region, value / 100.0, level=BAR_LEVEL, anchor="centre")
+
+        # Magnitude only - the fill direction already carries the sign, and a
+        # minus makes the readout three glyphs, which cannot fit nine columns
+        # with spacing intact. Keeping it costs the legibility of the digits to
+        # repeat something the picture already says.
+        return str(abs(int(round(value))))
+
     def _spin(self, out: np.ndarray, region: Region, t: float) -> str:
         """Indeterminate animation. Carries no value - it is not a gauge.
 
@@ -281,6 +324,10 @@ class Gauge:
             readout = self._spin(out, region, t)
         elif style == "sparkline":
             readout = self._sparkline(out, region)
+        elif style == "dual":
+            readout = self._dual(out, region)
+        elif style == "bipolar":
+            readout = self._bipolar(out, region)
         else:
             readout = self._bar(out, region, t)
 

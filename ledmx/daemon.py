@@ -310,6 +310,7 @@ class Daemon:
         self, panel: str, label: str, value: float, *,
         now: float, style: str = "bar", total: float | None = None,
         spinner: str = "slide", direction: str = "up",
+        second: float = 0.0,
     ) -> str:
         """Show or update a progress gauge on one panel.
 
@@ -351,10 +352,12 @@ class Daemon:
             existing.total = total
             existing.spinner = spinner
             existing.direction = direction
+            existing.second = second
             return f"{panel}={style} {value:g}{converted}"
 
         state = GaugeState(label=label, value=value, style=style, total=total,
-                           spinner=spinner, direction=direction)
+                           spinner=spinner, direction=direction,
+                           second=second)
         if style == "sparkline":
             state.history.append(value)
         self._gauges[panel] = state
@@ -442,6 +445,7 @@ class Daemon:
                 panel, label = words[0], words[1]
                 value = float(words[2]) if len(words) > 2 else 0.0
                 total = float(opts["of"]) if "of" in opts else None
+                second = float(opts["second"]) if "second" in opts else 0.0
                 spinner = opts.get("spinner", "slide")
                 direction = opts.get("direction", "up")
                 if direction not in SPIN_DIRECTIONS:
@@ -457,7 +461,7 @@ class Daemon:
                 style = opts.get("style", default_style)
                 return "OK gauge " + self.set_gauge(
                     panel, label, value, now=now, style=style, total=total,
-                    spinner=spinner, direction=direction,
+                    spinner=spinner, direction=direction, second=second,
                 )
             if cmd == "alert":
                 opts, rest = _split_options(args)
